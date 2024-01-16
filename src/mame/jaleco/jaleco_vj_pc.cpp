@@ -95,8 +95,8 @@ void jaleco_vj_pc_device::sound_config(device_t &device)
 {
 	jaleco_vj_isa16_sound_device &sound = downcast<jaleco_vj_isa16_sound_device &>(device);
 	sound.set_steppingstage_mode(m_is_steppingstage);
-	sound.add_route(0, *this, 1.0, AUTO_ALLOC_INPUT, 0);
-	sound.add_route(1, *this, 1.0, AUTO_ALLOC_INPUT, 1);
+	sound.add_route(0, *this, 1.0, 0);
+	sound.add_route(1, *this, 1.0, 1);
 }
 
 void jaleco_vj_pc_device::boot_state_w(uint8_t data)

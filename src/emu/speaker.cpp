@@ -21,7 +21,29 @@
 // device type definition
 DEFINE_DEVICE_TYPE(SPEAKER, speaker_device, "speaker", "Speaker")
 
+const speaker_device::position_name_mapping speaker_device::position_name_mappings[] = {
+	{  0.0,  0.0,  1.0, "Front center" },
+	{ -0.2,  0.0,  1.0, "Front left"   },
+	{  0.0, -0.5,  1.0, "Front floor" },
+	{  0.2,  0.0,  1.0, "Front right" },
+	{  0.0,  0.0, -0.5, "Rear center" },
+	{ -0.2,  0.0, -0.5, "Rear left" },
+	{  0.2,  0.0, -0.5, "Read right" },
+	{  0.0,  0.0, -0.1, "Headrest center" },
+	{ -0.1,  0.0, -0.1, "Headrest left" },
+	{  0.1,  0.0, -0.1, "Headrest right" },
+	{  0.0, -0.5,  0.0, "Seat" },
+	{  0.0, -0.2,  0.1, "Backrest" },
+	{ }
+};
 
+std::string speaker_device::get_position_name(u32 channel) const
+{
+	for(unsigned int i = 0; position_name_mappings[i].m_name; i++)
+		if(m_positions[channel][0] == position_name_mappings[i].m_x && m_positions[channel][1] == position_name_mappings[i].m_y && m_positions[channel][2] == position_name_mappings[i].m_z)
+			return position_name_mappings[i].m_name;
+	return util::string_format("#%d", channel);
+}
 
 //**************************************************************************
 //  LIVE SPEAKER DEVICE
@@ -31,14 +53,10 @@ DEFINE_DEVICE_TYPE(SPEAKER, speaker_device, "speaker", "Speaker")
 //  speaker_device - constructor
 //-------------------------------------------------
 
-speaker_device::speaker_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 clock)
-	: device_t(mconfig, SPEAKER, tag, owner, clock)
-	, device_mixer_interface(mconfig, *this)
-	, m_x(0.0)
-	, m_y(0.0)
-	, m_z(0.0)
-	, m_pan(0.0)
-	, m_defpan(0.0)
+speaker_device::speaker_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 channels)
+	: device_t(mconfig, SPEAKER, tag, owner, 0)
+	, device_mixer_interface(mconfig, *this, channels ? channels : 1)
+	, m_positions(channels ? channels : 1)
 	, m_current_max(0)
 	, m_samples_this_bucket(0)
 {
@@ -58,35 +76,20 @@ speaker_device::~speaker_device()
 //  set_position - set speaker position
 //-------------------------------------------------
 
-speaker_device &speaker_device::set_position(double x, double y, double z)
+speaker_device &speaker_device::set_position(u32 channel, double x, double y, double z)
 {
-	// as mentioned in the header file, y and z params currently have no effect
-	m_x = x;
-	m_y = y;
-	m_z = z;
-
-	// hard pan to left
-	if (m_x < 0.0)
-		set_pan(-1.0f);
-
-	// hard pan to right
-	else if (m_x > 0.0)
-		set_pan(1.0f);
-
-	// center (mono)
-	else
-		set_pan(0.0f);
-
-	m_defpan = m_pan;
+	m_positions[channel][0] = x;
+	m_positions[channel][1] = y;
+	m_positions[channel][2] = z;
 	return *this;
 }
 
 
 //-------------------------------------------------
-//  mix - mix in samples from the speaker's stream
+//  update - output the samples from the speaker's stream
 //-------------------------------------------------
 
-void speaker_device::mix(stream_buffer::sample_t *leftmix, stream_buffer::sample_t *rightmix, attotime start, attotime end, int expected_samples, bool suppress)
+void speaker_device::update(u32 channel, stream_buffer::sample_t *output, attotime start, attotime end, int expected_samples)
 {
 	// skip if no stream
 	if (m_mixer_stream == nullptr)
@@ -97,7 +100,7 @@ void speaker_device::mix(stream_buffer::sample_t *leftmix, stream_buffer::sample
 		return;
 
 	// get a view on the desired range
-	read_stream_view view = m_mixer_stream->update_view(start, end);
+	read_stream_view view = m_mixer_stream->update_view(start, end, channel);
 	sound_assert(view.samples() >= expected_samples);
 
 	// track maximum sample value for each 0.1s bucket
@@ -116,33 +119,8 @@ void speaker_device::mix(stream_buffer::sample_t *leftmix, stream_buffer::sample
 		}
 	}
 
-	// mix if sound is enabled
-	if (!suppress)
-	{
-		// if the speaker is hard panned to the left, send only to the left
-		if (m_pan == -1.0f)
-			for (int sample = 0; sample < expected_samples; sample++)
-				leftmix[sample] += view.get(sample);
-
-		// if the speaker is hard panned to the right, send only to the right
-		else if (m_pan == 1.0f)
-			for (int sample = 0; sample < expected_samples; sample++)
-				rightmix[sample] += view.get(sample);
-
-		// otherwise, send to both
-		else
-		{
-			const float leftpan = (m_pan <= 0.0f) ? 1.0f : 1.0f - m_pan;
-			const float rightpan = (m_pan >= 0.0f) ? 1.0f : 1.0f + m_pan;
-
-			for (int sample = 0; sample < expected_samples; sample++)
-			{
-				stream_buffer::sample_t cursample = view.get(sample);
-				leftmix[sample] += cursample * leftpan;
-				rightmix[sample] += cursample * rightpan;
-			}
-		}
-	}
+	for (int sample = 0; sample < expected_samples; sample++)
+		output[sample] = view.get(sample);
 }
 
 

@@ -20,6 +20,7 @@
 
 #include "osdepend.h"
 
+#include <algorithm>
 
 //**************************************************************************
 //  DEBUGGING
@@ -330,7 +331,7 @@ void stream_buffer::backfill_upsample(sample_t const *src, int samples, attotime
 		if (srcindex >= samples)
 			break;
 
-		// write this sample at the pevious position
+		// write this sample at the previous position
 		end = prev_index(end);
 		put(end, src[srcindex]);
 
@@ -1070,17 +1071,16 @@ sound_manager::sound_manager(running_machine &machine) :
 	m_update_timer(nullptr),
 	m_update_number(0),
 	m_last_update(attotime::zero),
-	m_finalmix_leftover(0),
+	m_comp_leftover(0),
 	m_samples_this_update(0),
-	m_finalmix(machine.sample_rate()),
-	m_leftmix(machine.sample_rate()),
-	m_rightmix(machine.sample_rate()),
+	m_comp_samples_this_update(0),
+	m_record_buffer(machine.sample_rate()),
 	m_compressor_scale(1.0),
 	m_compressor_counter(0),
 	m_compressor_enabled(machine.options().compressor()),
 	m_muted(0),
 	m_nosound_mode(machine.osd().no_sound()),
-	m_attenuation(0),
+	m_volume(0),
 	m_unique_id(0),
 	m_wavfile(),
 	m_first_reset(true)
@@ -1104,12 +1104,15 @@ sound_manager::sound_manager(running_machine &machine) :
 	// register global states
 	machine.save().save_item(NAME(m_last_update));
 
-	// set the starting attenuation
-	set_attenuation(machine.options().volume());
+	// set the starting volume
+	set_volume(machine.options().volume());
 
 	// start the periodic update flushing timer
 	m_update_timer = machine.scheduler().timer_alloc(timer_expired_delegate(FUNC(sound_manager::update), this));
 	m_update_timer->adjust(STREAMS_UPDATE_ATTOTIME, 0, STREAMS_UPDATE_ATTOTIME);
+
+	// mark the generation as "just starting"
+	m_osd_info.m_generation = 0xffffffff;
 }
 
 
@@ -1172,14 +1175,12 @@ void sound_manager::stop_recording()
 
 
 //-------------------------------------------------
-//  set_attenuation - set the global volume
+//  set_volume - set the global volume
 //-------------------------------------------------
 
-void sound_manager::set_attenuation(float attenuation)
+void sound_manager::set_volume(float volume)
 {
-	// currently OSD only supports integral attenuation
-	m_attenuation = int(attenuation);
-	machine().osd().set_mastervolume(m_muted ? -32 : m_attenuation);
+	m_volume = volume;
 }
 
 
@@ -1216,10 +1217,12 @@ bool sound_manager::indexed_mixer_input(int index, mixer_input &info) const
 //  the current frame
 //-------------------------------------------------
 
-void sound_manager::samples(s16 *buffer)
+std::vector<s16> sound_manager::samples()
 {
-	for (int sample = 0; sample < m_samples_this_update * 2; sample++)
-		*buffer++ = m_finalmix[sample];
+	std::vector<s16> samp(m_comp_samples_this_update*2);
+	for (int sample = 0; sample < m_comp_samples_this_update * 2; sample++)
+		samp[sample] = m_record_buffer[sample];
+	return samp;
 }
 
 
@@ -1236,7 +1239,7 @@ void sound_manager::mute(bool mute, u8 reason)
 		m_muted &= ~reason;
 
 	if(old_muted != (m_muted != 0))
-		set_attenuation(m_attenuation);
+		set_volume(m_volume);
 }
 
 
@@ -1273,10 +1276,7 @@ void sound_manager::apply_sample_rate_changes()
 
 		// due to device removal, some speakers may end up with no outputs; just skip those
 		if (stream != nullptr)
-		{
-			sound_assert(speaker.outputs() == 1);
 			stream->apply_sample_rate_changes(m_update_number, machine().sample_rate());
-		}
 	}
 }
 
@@ -1284,6 +1284,19 @@ void sound_manager::apply_sample_rate_changes()
 //-------------------------------------------------
 //  reset - reset all sound chips
 //-------------------------------------------------
+
+sound_manager::speaker_info::speaker_info(speaker_device &speaker, u32 size) : m_speaker(speaker)
+{
+	m_channels = speaker.outputs();
+	m_buffers.resize(m_channels);
+	m_comp_buffers.resize(m_channels);
+	for(u32 channel = 0; channel != m_channels; channel++) {
+		m_buffers[channel].resize(size);
+		m_comp_buffers[channel].resize(size);
+		double x = speaker.get_position(channel)[0];
+		m_record_mix.push_back(x < 0.0 ? 1 : x == 0 ? 2 : 3);
+	}
+}
 
 void sound_manager::reset()
 {
@@ -1310,8 +1323,7 @@ void sound_manager::reset()
 			sound_stream *const output = speaker.output_to_stream_output(0, dummy);
 			if (output)
 				recursive_remove_stream_from_orphan_list(output);
-
-			m_speakers.emplace_back(speaker);
+			m_speakers.emplace_back(speaker_info(speaker, machine().sample_rate()));
 		}
 
 #if (SOUND_DEBUG)
@@ -1367,13 +1379,13 @@ void sound_manager::config_load(config_type cfg_type, config_level cfg_level, ut
 	if ((cfg_type != config_type::SYSTEM) || !parentnode)
 		return;
 
-	// master volume attenuation
-	if (util::xml::data_node const *node = parentnode->get_child("attenuation"))
+	// master volume
+	if (util::xml::data_node const *node = parentnode->get_child("volume"))
 	{
 		// treat source INI files or more specific as higher priority than CFG
 		// FIXME: leaky abstraction - this depends on a front-end implementation detail
 		if ((OPTION_PRIORITY_NORMAL + 5) > machine().options().get_entry(OPTION_VOLUME)->priority())
-			set_attenuation(std::clamp(int(node->get_attribute_int("value", 0)), -32, 0));
+			set_volume(std::clamp(int(node->get_attribute_int("value", 0)), -32, 0));
 	}
 
 	// iterate over channel nodes
@@ -1390,22 +1402,19 @@ void sound_manager::config_load(config_type cfg_type, config_level cfg_level, ut
 		}
 	}
 
-	// iterate over speaker panning nodes
-	for (util::xml::data_node const *node = parentnode->get_child("panning"); node != nullptr; node = node->get_next_sibling("panning"))
+	// iterate over speakers for mapping
+	m_configs.clear();
+	for (util::xml::data_node const *node = parentnode->get_child("speaker"); node != nullptr; node = node->get_next_sibling("speaker"))
 	{
-		char const *const tag = node->get_attribute_string("tag", nullptr);
-		if (tag != nullptr)
-		{
-			for (speaker_device &speaker : speaker_device_enumerator(machine().root_device()))
-			{
-				if (!strcmp(tag, speaker.tag()))
-				{
-					float value = node->get_attribute_float("value", speaker.defpan());
-					speaker.set_pan(value);
-					break;
-				}
-			}
-		}
+		m_configs.emplace_back(config_mapping { node->get_attribute_string("tag", "") });
+		auto &config = m_configs.back();
+		for (util::xml::data_node const *nmap = node->get_child("node_mapping"); nmap != nullptr; nmap = nmap->get_next_sibling("node_mapping"))
+			config.m_node_mappings.emplace_back(std::pair<std::string, float>(nmap->get_attribute_string("node", ""), nmap->get_attribute_float("db", 0)));
+		for (util::xml::data_node const *cmap = node->get_child("channel_mapping"); cmap != nullptr; cmap = cmap->get_next_sibling("channel_mapping"))
+			config.m_channel_mappings.emplace_back(std::tuple<u32, std::string, u32, float>(cmap->get_attribute_int("guest_channel", 0),
+																							cmap->get_attribute_string("node", ""),
+																							cmap->get_attribute_int("node_channel", 0), 
+																							cmap->get_attribute_float("db", 0)));
 	}
 }
 
@@ -1421,11 +1430,11 @@ void sound_manager::config_save(config_type cfg_type, util::xml::data_node *pare
 	if (cfg_type != config_type::SYSTEM)
 		return;
 
-	// master volume attenuation
-	if (m_attenuation != machine().options().volume())
+	// master volume
+	if (m_volume != machine().options().volume())
 	{
-		if (util::xml::data_node *const node = parentnode->add_child("attenuation", nullptr))
-			node->set_attribute_int("value", m_attenuation);
+		if (util::xml::data_node *const node = parentnode->add_child("volume", nullptr))
+			node->set_attribute_float("value", m_volume);
 	}
 
 	// iterate over mixer channels for per-channel volume
@@ -1447,20 +1456,28 @@ void sound_manager::config_save(config_type cfg_type, util::xml::data_node *pare
 		}
 	}
 
-	// iterate over speakers for panning
+	// iterate over speakers for mapping
 	for (speaker_device &speaker : speaker_device_enumerator(machine().root_device()))
-	{
-		float const value = speaker.pan();
-		if (value != speaker.defpan())
-		{
-			util::xml::data_node *const node = parentnode->add_child("panning", nullptr);
-			if (node)
+		for (const auto &config : m_configs)
+			if (config.m_name == speaker.tag())
 			{
-				node->set_attribute("tag", speaker.tag());
-				node->set_attribute_float("value", value);
+				util::xml::data_node *const sp_node = parentnode->add_child("speaker", nullptr);
+				sp_node->set_attribute("tag", speaker.tag());
+				for (const auto &nmap : config.m_node_mappings)
+				{
+					util::xml::data_node *const node = sp_node->add_child("node_mapping", nullptr);
+					node->set_attribute("node", nmap.first.c_str());
+					node->set_attribute_float("db", nmap.second);
+				}
+				for (const auto &cmap : config.m_channel_mappings)
+				{
+					util::xml::data_node *const node = sp_node->add_child("channel_mapping", nullptr);
+					node->set_attribute_int("guest_channel", std::get<0>(cmap));
+					node->set_attribute("node", std::get<1>(cmap).c_str());
+					node->set_attribute_int("node_channel", std::get<2>(cmap));
+					node->set_attribute_float("db", std::get<3>(cmap));
+				}
 			}
-		}
-	}
 }
 
 
@@ -1502,57 +1519,823 @@ stream_buffer::sample_t sound_manager::adjust_toward_compressor_scale(stream_buf
 	return curscale;
 }
 
-
 //-------------------------------------------------
-//  update - mix everything down to its final form
-//  and send it to the OSD layer
+//  mapping_update - check if the mixing mapping
+//  must be updated and if yes do it
 //-------------------------------------------------
 
-void sound_manager::update(s32 param)
+sound_manager::config_mapping &sound_manager::config_get_speaker(speaker_device *speaker)
 {
-	LOG("sound_update\n");
+	for(auto &config : m_configs)
+		if(config.m_name == speaker->tag())
+			return config;
+	m_configs.emplace_back(config_mapping { speaker->tag() });
+	return m_configs.back();
+}
 
-	auto profile = g_profiler.start(PROFILER_SOUND);
+void sound_manager::config_add_speaker_target_node(speaker_device *speaker, std::string name, float db)
+{
+	internal_config_add_speaker_target_node(speaker, name, db);
+	m_osd_info.m_generation --;
+}
 
-	// determine the duration of this update
-	attotime update_period = machine().time() - m_last_update;
-	sound_assert(update_period.seconds() == 0);
+void sound_manager::internal_config_add_speaker_target_node(speaker_device *speaker, std::string name, float db)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto &nmap : config.m_node_mappings)
+		if(nmap.first == name)
+			return;
+	config.m_node_mappings.emplace_back(std::pair<std::string, float>(name, db));
+}
 
-	// use that to compute the number of samples we need from the speakers
-	attoseconds_t sample_rate_attos = HZ_TO_ATTOSECONDS(machine().sample_rate());
-	m_samples_this_update = update_period.attoseconds() / sample_rate_attos;
+void sound_manager::config_add_speaker_target_default(speaker_device *speaker, float db)
+{
+	internal_config_add_speaker_target_default(speaker, db);
+	m_osd_info.m_generation --;
+}
 
-	// recompute the end time to an even sample boundary
-	attotime endtime = m_last_update + attotime(0, m_samples_this_update * sample_rate_attos);
+void sound_manager::internal_config_add_speaker_target_default(speaker_device *speaker, float db)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto &nmap : config.m_node_mappings)
+		if(nmap.first == "")
+			return;
+	config.m_node_mappings.emplace_back(std::pair<std::string, float>("", db));
+}
 
-	// clear out the mix bufers
-	std::fill_n(&m_leftmix[0], m_samples_this_update, 0);
-	std::fill_n(&m_rightmix[0], m_samples_this_update, 0);
+void sound_manager::config_remove_speaker_target_node(speaker_device *speaker, std::string name)
+{
+	internal_config_remove_speaker_target_node(speaker, name);
+	m_osd_info.m_generation --;
+}
 
+void sound_manager::internal_config_remove_speaker_target_node(speaker_device *speaker, std::string name)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto i = config.m_node_mappings.begin(); i != config.m_node_mappings.end(); i++)
+		if(i->first == name) {
+			config.m_node_mappings.erase(i);
+			return;
+		}
+}
+
+void sound_manager::config_remove_speaker_target_default(speaker_device *speaker)
+{
+	internal_config_remove_speaker_target_default(speaker);
+	m_osd_info.m_generation --;
+}
+
+void sound_manager::internal_config_remove_speaker_target_default(speaker_device *speaker)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto i = config.m_node_mappings.begin(); i != config.m_node_mappings.end(); i++)
+		if(i->first == "") {
+			config.m_node_mappings.erase(i);
+			return;
+		}
+}
+
+void sound_manager::config_set_volume_speaker_target_node(speaker_device *speaker, std::string name, float db)
+{
+	internal_config_set_volume_speaker_target_node(speaker, name, db);
+	m_osd_info.m_generation --;
+}
+
+void sound_manager::internal_config_set_volume_speaker_target_node(speaker_device *speaker, std::string name, float db)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto &nmap : config.m_node_mappings)
+		if(nmap.first == name) {
+			nmap.second = db;
+			return;
+		}
+}
+
+void sound_manager::config_set_volume_speaker_target_default(speaker_device *speaker, float db)
+{
+	internal_config_set_volume_speaker_target_default(speaker, db);
+	m_osd_info.m_generation --;
+}
+
+void sound_manager::internal_config_set_volume_speaker_target_default(speaker_device *speaker, float db)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto &nmap : config.m_node_mappings)
+		if(nmap.first == "") {
+			nmap.second = db;
+			return;
+		}
+}
+
+
+void sound_manager::config_add_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel, float db)
+{
+	internal_config_add_speaker_channel_target_node(speaker, guest_channel, name, node_channel, db);
+	m_osd_info.m_generation --;
+}
+
+void sound_manager::internal_config_add_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel, float db)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto &cmap : config.m_channel_mappings)
+		if(std::get<0>(cmap) == guest_channel && std::get<1>(cmap) == name && std::get<2>(cmap) == node_channel)
+			return;
+	config.m_channel_mappings.emplace_back(std::tuple<u32, std::string, u32, float>(guest_channel, name, node_channel, db));
+}
+
+void sound_manager::config_add_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel, float db)
+{
+	internal_config_add_speaker_channel_target_default(speaker, guest_channel, node_channel, db);
+	m_osd_info.m_generation --;
+}
+
+void sound_manager::internal_config_add_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel, float db)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto &cmap : config.m_channel_mappings)
+		if(std::get<0>(cmap) == guest_channel && std::get<1>(cmap) == "" && std::get<2>(cmap) == node_channel)
+			return;
+	config.m_channel_mappings.emplace_back(std::tuple<u32, std::string, u32, float>(guest_channel, "", node_channel, db));
+}
+
+void sound_manager::config_remove_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel)
+{
+	internal_config_remove_speaker_channel_target_node(speaker, guest_channel, name, node_channel);
+	m_osd_info.m_generation --;
+}
+
+void sound_manager::internal_config_remove_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto i = config.m_channel_mappings.begin(); i != config.m_channel_mappings.end(); i++)
+		if(std::get<0>(*i) == guest_channel && std::get<1>(*i) == name && std::get<2>(*i) == node_channel) {
+			config.m_channel_mappings.erase(i);
+			return;
+		}
+}
+
+void sound_manager::config_remove_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel)
+{
+	internal_config_remove_speaker_channel_target_default(speaker, guest_channel, node_channel);
+	m_osd_info.m_generation --;
+}
+
+void sound_manager::internal_config_remove_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto i = config.m_channel_mappings.begin(); i != config.m_channel_mappings.end(); i++)
+		if(std::get<0>(*i) == guest_channel && std::get<1>(*i) == "" && std::get<2>(*i) == node_channel) {
+			config.m_channel_mappings.erase(i);
+			return;
+		}
+}
+
+void sound_manager::config_set_volume_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel, float db)
+{
+	internal_config_set_volume_speaker_channel_target_node(speaker, guest_channel, name, node_channel, db);
+	m_osd_info.m_generation --;
+}
+
+void sound_manager::internal_config_set_volume_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel, float db)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto &cmap : config.m_channel_mappings)
+		if(std::get<0>(cmap) == guest_channel && std::get<1>(cmap) == name && std::get<2>(cmap) == node_channel) {
+			std::get<3>(cmap) = db;
+			return;
+		}
+}
+
+void sound_manager::config_set_volume_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel, float db)
+{
+	internal_config_set_volume_speaker_channel_target_default(speaker, guest_channel, node_channel, db);
+	m_osd_info.m_generation --;
+}
+
+void sound_manager::internal_config_set_volume_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel, float db)
+{
+	auto &config = config_get_speaker(speaker);
+	for(auto &cmap : config.m_channel_mappings)
+		if(std::get<0>(cmap) == guest_channel && std::get<1>(cmap) == "" && std::get<2>(cmap) == node_channel) {
+			std::get<3>(cmap) = db;
+			return;
+		}
+}
+
+void sound_manager::startup_cleanups()
+{
+	auto osd_info = machine().osd().sound_get_information();
+
+	// for every speaker that does not have a configuration entry, add a
+	// mapping to default
+	for (speaker_device &speaker : speaker_device_enumerator(machine().root_device()))
+	{
+		for (const auto &config : m_configs)
+			if (config.m_name == speaker.tag())
+				goto has_config;
+		m_configs.emplace_back(config_mapping { speaker.tag() });
+		m_configs.back().m_node_mappings.emplace_back(std::pair<std::string, float>("", 0.0));
+	has_config:
+		;
+	}
+
+	// If there's no default sink replace all the default sink config
+	// entries into the first sink available
+	if(!osd_info.m_default_sink) {
+		std::string first_sink_name;
+		for(const auto &node : osd_info.m_nodes)
+			if(!node.m_sinks.empty()) {
+				first_sink_name = node.m_name;
+				break;
+		}
+
+		if(first_sink_name != "")
+			for(auto &config : m_configs) {
+				for(auto &nmap : config.m_node_mappings)
+					if(nmap.first == "")
+						nmap.first = first_sink_name;
+				for(auto &cmap : config.m_channel_mappings)
+					if(std::get<1>(cmap) == "")
+						std::get<1>(cmap) = first_sink_name;
+			}
+	}	
+}
+
+void sound_manager::osd_information_update()
+{
+	// Get a snapshot of the current information
+	m_osd_info = machine().osd().sound_get_information();
+
+	// Analyze the streams to see if anything changed, but only in the
+	// split stream case.
+	if(machine().osd().sound_split_streams_per_source())
+		for(auto &stream : m_osd_streams) {
+			u32 sidx;
+			for(sidx = 0; sidx != m_osd_info.m_streams.size() && m_osd_info.m_streams[sidx].m_id != stream.m_id; sidx++);
+			// If the stream has been lost, continue.  It will be cleared in update_osd_streams.
+			if(sidx == m_osd_info.m_streams.size())
+				continue;
+
+			// Check if the target and/or the volumes changed
+			bool node_changed = stream.m_node != m_osd_info.m_streams[sidx].m_node;
+			bool volume_changed = !std::equal(stream.m_volumes.begin(), stream.m_volumes.end(), m_osd_info.m_streams[sidx].m_volumes.begin(), m_osd_info.m_streams[sidx].m_volumes.end());
+
+			if(node_changed || volume_changed) {
+				// Check if a node change is just tracking the system default
+				bool system_default_tracking = node_changed && stream.m_is_system_default && m_osd_info.m_streams[sidx].m_node == m_osd_info.m_default_sink;
+
+				// Find the config entry for the speaker
+				config_mapping *config = nullptr;
+				for(auto &conf : m_configs)
+					if(conf.m_name == stream.m_speaker->tag()) {
+						config = &conf;
+						break;
+					}
+				if(!config)
+					continue;
+
+				// Retrieve the old node name, and, if it's different, the new node name
+				std::string old_node_name = stream.m_node_name;
+				std::string new_node_name;
+				if(node_changed) {
+					for(const auto &node : m_osd_info.m_nodes)
+						if(node.m_id == m_osd_info.m_streams[sidx].m_node) {
+							new_node_name = node.m_name;
+							break;
+						}
+					// That's really, really not supposed to happen
+					if(new_node_name.empty())
+						continue;
+				} else
+					new_node_name = old_node_name;
+
+				// Separate the cases on full mapping vs. channel mapping
+				if(stream.m_guest_channels.empty()) {
+					// Full mapping
+					// Find the index of the config mapping entry that generated the stream, if there's still one.
+					// Note that a default system stream has the empty string as a name
+					u32 index;
+					for(index = 0; index != config->m_node_mappings.size(); index++)
+						if(config->m_node_mappings[index].first == old_node_name)
+							break;
+					if(index == config->m_node_mappings.size())
+						continue;
+
+					// If the target node changed, write it down
+					if(node_changed) {
+						if(!system_default_tracking) {
+							config->m_node_mappings[index].first = new_node_name;
+							stream.m_node_name = new_node_name;
+							stream.m_is_system_default = false;
+						}
+						stream.m_node = m_osd_info.m_streams[sidx].m_node;
+					}
+
+					// If the volume changed, there are two
+					// possibilities: either the channels split, or
+					// they didn't.
+					if(volume_changed) {
+						// Check is all the channel volumes are the same
+						float new_volume = m_osd_info.m_streams[sidx].m_volumes[0];
+						bool same = true;
+						for(u32 i = 1; i != m_osd_info.m_streams[sidx].m_volumes.size(); i++)
+							if(m_osd_info.m_streams[sidx].m_volumes[i] != new_volume) {
+								same = false;
+								break;
+							}
+						if(same) {
+							// All the same volume, just note down the new volume
+							stream.m_volumes = m_osd_info.m_streams[sidx].m_volumes;
+							config->m_node_mappings[index].second = new_volume;
+
+						} else {
+							const osd::audio_info::node_info *node = nullptr;
+							for(const auto &n : m_osd_info.m_nodes)
+								if(n.m_id == stream.m_node) {
+									node = &n;
+									break;
+								}
+							for(u32 channel = 0; channel != stream.m_speaker->outputs(); channel++) {
+								std::vector<u32> targets = find_channel_mapping(stream.m_speaker->get_position(channel), node);
+								for(u32 tchannel : targets)
+									if(stream.m_node_name == "")
+										internal_config_add_speaker_channel_target_default(stream.m_speaker, channel, tchannel, m_osd_info.m_streams[sidx].m_volumes[tchannel]);
+									else
+										internal_config_add_speaker_channel_target_node(stream.m_speaker, channel, stream.m_node_name, tchannel, m_osd_info.m_streams[sidx].m_volumes[tchannel]);
+							}
+							config->m_node_mappings.erase(config->m_node_mappings.begin() + index);
+						}
+					}
+				} else {
+					// Channel mapping
+					for(u32 channel = 0; channel != stream.m_channels; channel++) {
+						if(stream.m_guest_channels[channel] == 0xffffffff)
+							continue;
+
+						// Find the index of the config mapping entry that generated the stream channel, if there's still one.
+						// Note that a default system stream has the empty string as a name
+						u32 index;
+						for(index = 0; index != config->m_channel_mappings.size(); index++)
+							if(std::get<0>(config->m_channel_mappings[index]) == stream.m_guest_channels[index] &&
+							   std::get<1>(config->m_channel_mappings[index]) == old_node_name &&
+							   std::get<2>(config->m_channel_mappings[index]) == channel)
+								break;
+						if(index == config->m_channel_mappings.size())
+							continue;
+
+						// If the target node changed, write it down
+						if(node_changed) {
+							if(!system_default_tracking) {
+								std::get<1>(config->m_channel_mappings[index]) = new_node_name;
+								stream.m_node_name = new_node_name;
+								stream.m_is_system_default = false;
+							}
+							stream.m_node = m_osd_info.m_streams[sidx].m_node;
+						}
+
+						// If the volume changed, write in down too
+						if(volume_changed) {
+							std::get<3>(config->m_channel_mappings[index]) = m_osd_info.m_streams[sidx].m_volumes[channel];
+							stream.m_volumes[channel] = m_osd_info.m_streams[sidx].m_volumes[channel];
+						}
+					}
+				}
+			}
+		}
+}
+
+void sound_manager::generate_mapping()
+{
+	auto find_node = [this](std::string name) -> u32 {
+		for(const auto &node : m_osd_info.m_nodes)
+			if(node.m_name == name)
+				return node.m_id;
+		return 0;
+	};
+
+	m_mappings.clear();
+	for(speaker_info &speaker : m_speakers) {
+		auto &config = config_get_speaker(&speaker.m_speaker);
+		m_mappings.emplace_back(mapping { &speaker.m_speaker });
+		auto &omap = m_mappings.back();
+
+		std::vector<std::string> node_to_remove;
+		for(auto &nmap : config.m_node_mappings) {
+			if(nmap.first == "")
+				omap.m_node_mappings.emplace_back(mapping::node_mapping { m_osd_info.m_default_sink, nmap.second, true });
+			else {
+				u32 node_id = find_node(nmap.first);
+				if(node_id != 0)
+					omap.m_node_mappings.emplace_back(mapping::node_mapping { node_id, nmap.second, false });
+				else
+					node_to_remove.push_back(nmap.first);
+			}
+		}
+
+		std::vector<std::tuple<u32, std::string, u32>> channel_map_to_remove;
+		for(auto &cmap : config.m_channel_mappings) {
+			if(std::get<1>(cmap) == "") {
+				if(m_osd_info.m_default_sink)
+					omap.m_channel_mappings.emplace_back(mapping::channel_mapping { std::get<0>(cmap), m_osd_info.m_default_sink, std::get<2>(cmap), std::get<3>(cmap), true });
+			} else {
+				u32 node_id = find_node(std::get<1>(cmap));
+				if(node_id != 0)
+					omap.m_channel_mappings.emplace_back(mapping::channel_mapping { std::get<0>(cmap), node_id, std::get<2>(cmap), std::get<3>(cmap), false });
+				else
+					channel_map_to_remove.push_back(std::tuple<u32, std::string, u32>(std::get<0>(cmap), std::get<1>(cmap), std::get<2>(cmap)));
+			}
+		}
+
+		for(auto &cmap : channel_map_to_remove)
+			internal_config_remove_speaker_channel_target_node(&speaker.m_speaker, std::get<0>(cmap), std::get<1>(cmap), std::get<2>(cmap));
+	}
+}
+
+// Find where to map a speaker channel into a node's channels depending on their positions
+
+std::vector<u32> sound_manager::find_channel_mapping(const std::array<double, 3> &position, const osd::audio_info::node_info *node)
+{
+	std::vector<u32> result;
+	if(position[0] == 0 && position[1] == 0 && position[2] == 0)
+		return result;
+	double best_dist = -1;
+	for(u32 port = 0; port != node->m_sinks.size(); port++)
+		if(node->m_sinks[port].m_position[0] || node->m_sinks[port].m_position[1] || node->m_sinks[port].m_position[2]) {
+			double dx = position[0] - node->m_sinks[port].m_position[0];
+			double dy = position[1] - node->m_sinks[port].m_position[1];
+			double dz = position[2] - node->m_sinks[port].m_position[2];
+			double dist = dx*dx + dy*dy + dz*dz;
+			if(best_dist == -1 || dist < best_dist) {
+				best_dist = dist;
+				result.clear();
+				result.push_back(port);
+			} else if(best_dist == dist)
+				result.push_back(port);
+		}
+	return result;		
+}
+
+
+void sound_manager::update_osd_streams()
+{
+	auto current_streams = m_osd_streams;
+	m_osd_streams.clear();
+
+	// Find the index of a speaker_device in the speaker_info vector
+
+	auto find_speaker_index = [this](speaker_device *speaker) -> u32 {
+		for(u32 si = 0; si != m_speakers.size(); si++)
+			if(&m_speakers[si].m_speaker == speaker)
+				return si;
+		return 0; // Can't happen
+	};
+
+
+	// Find a pointer to a node_info from the node id
+	auto find_node_info = [this](u32 node) -> const osd::audio_info::node_info * {
+		for(const auto &ni : m_osd_info.m_nodes) {
+			if(ni.m_id == node)
+				return &ni;
+		}
+		// Can't happen
+		return nullptr;
+	};
+
+	// Two possible mapping methods depending on the osd capabilities
+
+	m_mixing_steps.clear();
+
+	auto &osd = machine().osd();
+	if(osd.sound_split_streams_per_source()) {
+		auto get_stream_for_node_and_source = [this, &current_streams] (const osd::audio_info::node_info *node, speaker_device *speaker, bool is_system_default) -> u32 {
+			// Create the default to-clear mask
+			u32 channels = node->m_sinks.size();
+			u32 cmask = util::make_bitmask<u32>(channels);
+
+			// Check if the osd stream already exists to pick it up in case.
+			// Clear the id in the current_streams structure to show it has been picked up, reset the clear mask.
+			// Clear the source channels and the volumes
+			// m_speaker will already be correct
+
+			for(auto &os : current_streams)
+				if(os.m_id && os.m_node == node->m_id && os.m_speaker == speaker) {
+					u32 sid = m_osd_streams.size();
+					m_osd_streams.emplace_back(std::move(os));
+					os.m_id = 0;
+					auto &nos = m_osd_streams[sid];
+					nos.m_guest_channels.clear();
+					nos.m_volumes.clear();
+					nos.m_clear_mask = cmask;
+					nos.m_is_system_default = is_system_default;
+					return sid;
+				}
+
+			// If none exists, create one
+			u32 sid = m_osd_streams.size();
+			m_osd_streams.emplace_back(osd_stream{ 0, node->m_id, is_system_default ? "" : node->m_name, channels, cmask, is_system_default, speaker });
+			osd_stream &nos = m_osd_streams.back();
+			u32 rate = machine().sample_rate();
+			nos.m_buffer.resize(rate);
+			nos.m_id = machine().osd().sound_stream_sink_open(node->m_id, speaker->tag(), rate);
+			return sid;
+		};
+
+		auto get_stream_for_node_source_and_channel = [this, &get_stream_for_node_and_source] (const osd::audio_info::node_info *node, u32 node_channel, speaker_device *speaker, bool is_system_default) -> u32 {
+			// First check if there's an active stream with the correct channel not used yet
+			for(u32 sid = 0; sid != m_osd_streams.size(); sid++) {
+				auto &os = m_osd_streams[sid];
+				if(os.m_node == node->m_id && os.m_speaker == speaker && os.m_clear_mask & (1 << node_channel) && !os.m_guest_channels.empty())
+					return sid;
+			}
+
+			// Otherwise used the default method
+			u32 sid = get_stream_for_node_and_source(node, speaker, is_system_default);
+			m_osd_streams[sid].m_guest_channels.resize(m_osd_streams[sid].m_channels, 0xffffffff);
+			return sid;
+		};
+
+		// Create/retrieve streams to apply the decided mapping
+		for(const auto &omap : m_mappings) {
+			u32 speaker_index = find_speaker_index(omap.m_speaker);
+			for(const auto &nm : omap.m_node_mappings) {
+				const auto *node = find_node_info(nm.m_node);
+				u32 stream_index = get_stream_for_node_and_source(node, omap.m_speaker, nm.m_is_system_default);
+				auto &stream = m_osd_streams[stream_index];
+				u32 cmask = stream.m_clear_mask;
+				float linear_volume = 1.0;
+
+				if(osd.sound_external_per_channel_volume()) {
+					stream.m_volumes.clear();
+					stream.m_volumes.resize(m_speakers[speaker_index].m_channels, nm.m_db);
+
+				} else
+					linear_volume = osd::db_to_linear(nm.m_db);
+
+				for(u32 channel = 0; channel != m_speakers[speaker_index].m_channels; channel++) {
+					std::vector<u32> targets = find_channel_mapping(omap.m_speaker->get_position(channel), node);
+					for(u32 tchannel : targets) {
+						// If the channel is in the to clear mask, use
+						// load, otherwise use add.
+						// Apply the volume too if needed
+						m_mixing_steps.emplace_back(mixing_step {
+														osd.sound_external_per_channel_volume() ?
+															(cmask & (1 << tchannel)) ? mixing_step::COPY : mixing_step::ADD :
+															(cmask & (1 << tchannel)) ? mixing_step::COPYVOL : mixing_step::ADDVOL,
+														speaker_index,
+														channel,
+														stream_index,
+														tchannel,
+														linear_volume
+														});
+						cmask &= ~(1 << tchannel);
+					}
+				}
+				stream.m_clear_mask = cmask;
+			}
+
+			for(const auto &cm : omap.m_channel_mappings) {
+				const auto *node = find_node_info(cm.m_node);
+				u32 stream_index = get_stream_for_node_source_and_channel(node, cm.m_node_channel, omap.m_speaker, cm.m_is_system_default);
+				auto &stream = m_osd_streams[stream_index];
+				float linear_volume = 1.0;
+
+				if(osd.sound_external_per_channel_volume()) {
+					if(stream.m_volumes.empty())
+						stream.m_volumes.resize(m_speakers[speaker_index].m_channels, -96);
+					stream.m_volumes[cm.m_node_channel] = cm.m_db;
+
+				} else
+					linear_volume = osd::db_to_linear(cm.m_db);
+
+				m_mixing_steps.emplace_back(mixing_step {
+												osd.sound_external_per_channel_volume() ? mixing_step::COPY : mixing_step::COPYVOL,
+												speaker_index,
+												cm.m_guest_channel,
+												stream_index,
+												cm.m_node_channel,
+												linear_volume
+												});
+				stream.m_guest_channels[cm.m_node_channel] = cm.m_guest_channel;
+				stream.m_clear_mask &= ~(1 << cm.m_node_channel);
+			}
+		}
+
+	} else {
+		// All sources need to be merged per-destination, max one stream per destination
+
+		std::map<u32, u32> stream_per_node;
+
+		// Retrieve or create the one osd stream for a given
+		// destination.  First check if we already have it, then
+		// whether it was previously created, then otherwise create
+		// it.
+
+		auto get_stream_for_node = [this, &current_streams, &stream_per_node] (const osd::audio_info::node_info *node, bool is_system_default) -> u32 {
+			// Pick up the existing stream if there's one
+			auto si = stream_per_node.find(node->m_id);
+			if(si != stream_per_node.end())				
+				return si->second;
+
+			// Create the default to-clear mask
+			u32 channels = node->m_sinks.size();
+			u32 cmask = util::make_bitmask<u32>(channels);
+
+			// Check if the osd stream already exists to pick it up in case.
+			// Clear the id in the current_streams structure to show it has been picked up, reset the clear mask.
+			// m_speaker will already be nullptr, m_source_channels and m_volumes empty.
+
+			for(auto &os : current_streams)
+				if(os.m_id && os.m_node == node->m_id) {
+					u32 sid = m_osd_streams.size();
+					m_osd_streams.emplace_back(std::move(os));
+					os.m_id = 0;
+					m_osd_streams.back().m_clear_mask = cmask;
+					m_osd_streams.back().m_is_system_default = is_system_default;
+					stream_per_node[node->m_id] = sid;
+					return sid;
+				}
+
+			// If none exists, create one
+			u32 sid = m_osd_streams.size();
+			m_osd_streams.emplace_back(osd_stream{ 0, node->m_id, is_system_default ? "" : node->m_name, channels, cmask, is_system_default, nullptr });
+			osd_stream &stream = m_osd_streams.back();
+			u32 rate = machine().sample_rate();
+			stream.m_buffer.resize(rate);
+			stream.m_id = machine().osd().sound_stream_sink_open(node->m_id, machine().system().name, rate);
+			stream_per_node[node->m_id] = sid;
+			return sid;
+		};
+
+
+		// Create/retrieve streams to apply the decided mapping
+
+		for(const auto &omap : m_mappings) {
+			u32 speaker_index = find_speaker_index(omap.m_speaker);
+			for(const auto &nm : omap.m_node_mappings) {
+				const auto *node = find_node_info(nm.m_node);
+				u32 stream_index = get_stream_for_node(node, nm.m_is_system_default);
+				u32 cmask = m_osd_streams[stream_index].m_clear_mask;
+				float linear_volume = osd::db_to_linear(nm.m_db);
+
+				for(u32 channel = 0; channel != m_speakers[speaker_index].m_channels; channel++) {
+					std::vector<u32> targets = find_channel_mapping(omap.m_speaker->get_position(channel), node);
+					for(u32 tchannel : targets) {
+						// If the channel is in the to clear mask, use load, otherwise use add
+						// Apply the volume too
+						m_mixing_steps.emplace_back(mixing_step {
+															(cmask & (1 << tchannel)) ? mixing_step::COPYVOL : mixing_step::ADDVOL,
+															speaker_index,
+															channel,
+															stream_index,
+															tchannel,
+															linear_volume
+															});
+						cmask &= ~(1 << tchannel);
+					}
+				}
+				m_osd_streams[stream_index].m_clear_mask = cmask;
+			}
+
+			for(const auto &cm : omap.m_channel_mappings) {
+				const auto *node = find_node_info(cm.m_node);
+				u32 stream_index = get_stream_for_node(node, false);
+				u32 cmask = m_osd_streams[stream_index].m_clear_mask;
+
+				// If the channel is in the to clear mask, use load, otherwise use add
+				// Apply the volume too
+				m_mixing_steps.emplace_back(mixing_step {
+													(cmask & (1 << cm.m_node_channel)) ? mixing_step::COPYVOL : mixing_step::ADDVOL,
+													speaker_index,
+													cm.m_guest_channel,
+													stream_index,
+													cm.m_node_channel,
+													osd::db_to_linear(cm.m_db)
+													});
+				m_osd_streams[stream_index].m_clear_mask = cmask & ~(1 << cm.m_node_channel);
+			}
+		}
+	}
+
+	// Add a clear step for all streams that need it
+	// Also set the volumes if supported
+	for(u32 stream_index = 0; stream_index != m_osd_streams.size(); stream_index++) {
+		auto &stream = m_osd_streams[stream_index];
+		if(stream.m_clear_mask) {
+			for(u32 channel = 0; channel != stream.m_channels; channel ++)
+				if(stream.m_clear_mask & (1 << channel))
+					m_mixing_steps.emplace_back(mixing_step { mixing_step::CLEAR, 0, 0, stream_index, channel, 0.0 });
+		}
+		if(!stream.m_volumes.empty())
+			osd.sound_stream_set_volumes(stream.m_id, stream.m_volumes);
+	}
+
+	// Close all previous streams that haven't been picked up
+	for(const auto &stream : current_streams)
+		if(stream.m_id)
+			machine().osd().sound_stream_close(stream.m_id);
+}
+
+void sound_manager::mapping_update()
+{
+	auto &osd = machine().osd();
+	while(m_osd_info.m_generation != osd.sound_get_generation()) {
+		osd_information_update();
+
+		if(0) {
+			fprintf(stderr, "OSD information:\n");
+			fprintf(stderr, "- generation %u\n", m_osd_info.m_generation);
+			fprintf(stderr, "- default sink %u\n", m_osd_info.m_default_sink);
+			fprintf(stderr, "- default source %u\n", m_osd_info.m_default_source);
+			fprintf(stderr, "- nodes:\n");
+			for(const auto &node : m_osd_info.m_nodes) {
+				fprintf(stderr, "  * %3u %s\n", node.m_id, node.m_name.c_str());
+				for(const auto &pi : node.m_sinks)
+					fprintf(stderr, "      > %s [%g %g %g]\n", pi.m_name.c_str(), pi.m_position[0], pi.m_position[1], pi.m_position[2]);
+				for(const auto &pi : node.m_sources)
+					fprintf(stderr, "      < %s [%g %g %g]\n", pi.m_name.c_str(), pi.m_position[0], pi.m_position[1], pi.m_position[2]);
+			}
+			fprintf(stderr, "- streams:\n");
+			for(const auto &stream : m_osd_info.m_streams) {
+				fprintf(stderr, "  * %3u node %u", stream.m_id, stream.m_node);
+				if(!stream.m_volumes.empty()) {
+					fprintf(stderr, " volumes");
+					for(float v : stream.m_volumes)
+						fprintf(stderr, " %g", v);
+				}
+				fprintf(stderr, "\n");
+			}
+		}
+
+		generate_mapping();
+
+		if(0) {
+			fprintf(stderr, "MAPPING:\n");
+			for(const auto &omap : m_mappings) {
+				fprintf(stderr, "- speaker %s\n", omap.m_speaker->tag());
+				for(const auto &nm : omap.m_node_mappings)
+					fprintf(stderr, "  * node %u volume %g%s\n", nm.m_node, nm.m_db, nm.m_is_system_default ? " (default)" : "");
+				for(const auto &cm : omap.m_channel_mappings)
+					fprintf(stderr, "  * channel %u <-> node %u:%i volume %g\n", cm.m_guest_channel, cm.m_node, cm.m_node_channel, cm.m_db);
+			}
+		}
+
+		update_osd_streams();
+
+		if(0) {
+			fprintf(stderr, "OSD streams:\n");
+			for(const auto &os : m_osd_streams) {
+				if(machine().osd().sound_split_streams_per_source()) {
+					fprintf(stderr, "- %3u %s node %u", os.m_id, os.m_speaker ? os.m_speaker->tag() : "-", os.m_node);
+					if(!os.m_guest_channels.empty()) {
+						fprintf(stderr, " map");
+						for(u32 i = 0; i != os.m_channels; i++)
+							fprintf(stderr, "%c%u", i ? ',' : ' ', os.m_guest_channels[i]);
+					}
+					if(machine().osd().sound_external_per_channel_volume()) {
+						fprintf(stderr, " dB");
+						for(u32 i = 0; i != os.m_channels; i++)
+							fprintf(stderr, " %g", os.m_volumes[i]);
+					}
+					fprintf(stderr, "\n");
+				} else
+					fprintf(stderr, "- %3u node %u\n", os.m_id, os.m_node);
+			}
+			fprintf(stderr, "Mixing steps:\n");
+			for(const auto &ms : m_mixing_steps) {
+				static const char *const modes[5] = { "clear", "copy", "copy+vol", "add", "add+vol" };
+				fprintf(stderr, "- %s %u:%u -> %u:%u level %g\n", modes[ms.m_mode], ms.m_source_index, ms.m_source_channel, ms.m_stream_index, ms.m_stream_channel, ms.m_linear_volume);
+			}
+		}
+	}
+}
+
+void sound_manager::speakers_update(attotime endtime)
+{
 	// force all the speaker streams to generate the proper number of samples
-	for (speaker_device &speaker : m_speakers)
-		speaker.mix(&m_leftmix[0], &m_rightmix[0], m_last_update, endtime, m_samples_this_update, (m_muted & MUTE_REASON_SYSTEM));
+	for (speaker_info &speaker : m_speakers)
+		for (u32 channel = 0; channel != speaker.m_channels; channel++)
+			speaker.m_speaker.update(channel, speaker.m_buffers[channel].data(), m_last_update, endtime, m_samples_this_update);
+}
 
+void sound_manager::compressor_update()
+{
 	// determine the maximum in this section
 	stream_buffer::sample_t curmax = 0;
-	for (int sampindex = 0; sampindex < m_samples_this_update; sampindex++)
-	{
-		auto sample = m_leftmix[sampindex];
-		if (sample < 0)
-			sample = -sample;
-		if (sample > curmax)
-			curmax = sample;
-
-		sample = m_rightmix[sampindex];
-		if (sample < 0)
-			sample = -sample;
-		if (sample > curmax)
-			curmax = sample;
+	for (speaker_info &speaker : m_speakers)
+	{		
+		for (std::vector<stream_buffer::sample_t> &buffer : speaker.m_buffers)
+			for (int sampindex = 0; sampindex < m_samples_this_update; sampindex++)
+			{
+				auto sample = buffer[sampindex];
+				if (sample < 0)
+					sample = -sample;
+				if (sample > curmax)
+					curmax = sample;
+			}
 	}
 
 	// pull in current compressor scale factor before modifying
-	stream_buffer::sample_t lscale = m_compressor_scale;
-	stream_buffer::sample_t rscale = m_compressor_scale;
+	stream_buffer::sample_t current_scale = m_compressor_scale;
 
 	// if we're above what the compressor will handle, adjust the compression
 	if (curmax * m_compressor_scale > 1.0)
@@ -1574,66 +2357,185 @@ void sound_manager::update(s32 param)
 	}
 
 #if (SOUND_DEBUG)
-	if (lscale != m_compressor_scale)
+	if (current_scale != m_compressor_scale)
 	printf("scale=%.5f\n", m_compressor_scale);
 #endif
 
-	// track whether there are pending scale changes in left/right
-	stream_buffer::sample_t lprev = 0, rprev = 0;
+	float volume = osd::db_to_linear(m_volume) * 32767;
 
-	// now downmix the final result
-	u32 finalmix_step = machine().video().speed_factor();
-	u32 finalmix_offset = 0;
-	s16 *finalmix = &m_finalmix[0];
-	int sample;
-	for (sample = m_finalmix_leftover; sample < m_samples_this_update * 1000; sample += finalmix_step)
-	{
-		int sampindex = sample / 1000;
+	// now compute the final results pre-mixing
+	u32 comp_step = machine().video().speed_factor();
+	u32 leftover = 0xffffffff;
 
-		// ensure that changing the compression won't reverse direction to reduce "pops"
-		stream_buffer::sample_t lsamp = m_leftmix[sampindex];
-		if (lscale != m_compressor_scale && sample != m_finalmix_leftover)
-			lscale = adjust_toward_compressor_scale(lscale, lprev, lsamp);
+	for (speaker_info &speaker : m_speakers)
+		for (u32 channel = 0; channel != speaker.m_channels; channel++)
+		{
+			const stream_buffer::sample_t *src = speaker.m_buffers[channel].data();
+			s16 *dest = speaker.m_comp_buffers[channel].data();
+			stream_buffer::sample_t scale = current_scale;
+			stream_buffer::sample_t prev = 0;
+			m_comp_samples_this_update = 0;
 
-		lprev = lsamp * lscale;
-		if (m_compressor_enabled)
-			lsamp = lprev;
+			int sample;
+			for (sample = m_comp_leftover; sample < m_samples_this_update * 1000; sample += comp_step)
+			{
+				int sampindex = sample / 1000;
 
-		// clamp the left side
-		if (lsamp > 1.0)
-			lsamp = 1.0;
-		else if (lsamp < -1.0)
-			lsamp = -1.0;
-		finalmix[finalmix_offset++] = s16(lsamp * 32767.0);
+				// ensure that changing the compression won't reverse direction to reduce "pops"
+				stream_buffer::sample_t samp = src[sampindex];
+				if (scale != m_compressor_scale && sample != m_comp_leftover)
+					scale = adjust_toward_compressor_scale(scale, prev, samp);
 
-		// ensure that changing the compression won't reverse direction to reduce "pops"
-		stream_buffer::sample_t rsamp = m_rightmix[sampindex];
-		if (rscale != m_compressor_scale && sample != m_finalmix_leftover)
-			rscale = adjust_toward_compressor_scale(rscale, rprev, rsamp);
+				prev = samp * scale;
+				if (m_compressor_enabled)
+					samp = prev;
 
-		rprev = rsamp * rscale;
-		if (m_compressor_enabled)
-			rsamp = rprev;
+				if (samp > 1.0)
+					samp = 1.0;
+				else if (samp < -1.0)
+					samp = -1.0;
+				dest[m_comp_samples_this_update++] = s16(samp * volume);
 
-		// clamp the right side
-		if (rsamp > 1.0)
-			rsamp = 1.0;
-		else if (rsamp < -1.0)
-			rsamp = -1.0;
-		finalmix[finalmix_offset++] = s16(rsamp * 32767.0);
+			}
+			if (leftover == 0xffffffff)
+				leftover = sample - m_samples_this_update * 1000;
+		}
+	if (leftover == 0xffffffff)
+		leftover = 0;
+	m_comp_leftover = leftover;
+}
+
+void sound_manager::osd_output()
+{
+	// Apply the mixing steps
+	for(const auto &step : m_mixing_steps) {
+		s16 *dest = m_osd_streams[step.m_stream_index].m_buffer.data() + step.m_stream_channel;
+		u32 skip = m_osd_streams[step.m_stream_index].m_channels;
+		const s16 *src = step.m_mode == mixing_step::CLEAR ? nullptr : m_speakers[step.m_source_index].m_comp_buffers[step.m_source_channel].data();
+
+		switch(step.m_mode) {
+		case mixing_step::CLEAR:
+			for(u32 sample = 0; sample != m_comp_samples_this_update; sample++) {
+				*dest = 0;
+				dest += skip;
+			}
+			break;
+
+		case mixing_step::COPY:
+			for(u32 sample = 0; sample != m_comp_samples_this_update; sample++) {
+				*dest = *src++;
+				dest += skip;
+			}
+			break;
+
+		case mixing_step::COPYVOL:
+			for(u32 sample = 0; sample != m_comp_samples_this_update; sample++) {
+				*dest = s16(*src++ * step.m_linear_volume);
+				dest += skip;
+			}
+			break;
+
+
+		case mixing_step::ADD:
+			for(u32 sample = 0; sample != m_comp_samples_this_update; sample++) {
+				*dest += *src++;
+				dest += skip;
+			}
+			break;
+
+		case mixing_step::ADDVOL:
+			for(u32 sample = 0; sample != m_comp_samples_this_update; sample++) {
+				*dest += s16(*src++ * step.m_linear_volume);
+				dest += skip;
+			}
+			break;
+		}
 	}
-	m_finalmix_leftover = sample - m_samples_this_update * 1000;
 
-	// play the result
-	if (finalmix_offset > 0)
-	{
-		if (!m_nosound_mode)
-			machine().osd().update_audio_stream(finalmix, finalmix_offset / 2);
-		machine().osd().add_audio_to_recording(finalmix, finalmix_offset / 2);
-		machine().video().add_sound_to_recording(finalmix, finalmix_offset / 2);
-		if (m_wavfile)
-			util::wav_add_data_16(*m_wavfile, finalmix, finalmix_offset);
-	}
+	// Send the result to the osd
+	for(const auto &stream : m_osd_streams)
+		machine().osd().sound_stream_update(stream.m_id, stream.m_buffer.data(), m_comp_samples_this_update);
+}
+
+
+void sound_manager::recording_output()
+{
+	std::fill(m_record_buffer.begin(), m_record_buffer.begin() + m_comp_samples_this_update * 2, 0);
+	for (speaker_info &speaker : m_speakers)
+		for (u32 channel = 0; channel != speaker.m_channels; channel++)
+		{
+			s16 *dest = m_record_buffer.data();
+			const s16 *src = speaker.m_comp_buffers[channel].data();
+			switch (speaker.m_record_mix[channel]) {
+			case 0: default: break;
+			case 1:
+			{
+				for (u32 i=0; i != m_comp_samples_this_update; i++)
+				{
+					*dest ++ += *src++;
+					dest ++;
+				}
+				break;
+			}
+			case 2:
+			{
+				for (u32 i=0; i != m_comp_samples_this_update; i++)
+				{
+					dest ++;
+					*dest ++ += *src++;
+				}
+				break;
+			}
+			case 3:
+			{
+				for (u32 i=0; i != m_comp_samples_this_update; i++)
+				{
+					s16 samp = *src++;
+					*dest ++ += samp;
+					*dest ++ += samp;
+				}
+				break;
+			}
+			}
+		}
+
+	machine().osd().add_audio_to_recording(m_record_buffer.data(), m_comp_samples_this_update);
+	machine().video().add_sound_to_recording(m_record_buffer.data(), m_comp_samples_this_update);
+	if (m_wavfile)
+		util::wav_add_data_16(*m_wavfile, m_record_buffer.data(), m_comp_samples_this_update);
+}
+
+
+//-------------------------------------------------
+//  update - mix everything down to its final form
+//  and send it to the OSD layer
+//-------------------------------------------------
+
+void sound_manager::update(s32)
+{
+	LOG("sound_update\n");
+
+	auto profile = g_profiler.start(PROFILER_SOUND);
+
+	// determine the duration of this update
+	attotime update_period = machine().time() - m_last_update;
+	sound_assert(update_period.seconds() == 0);
+
+	// use that to compute the number of samples we need from the speakers
+	attoseconds_t sample_rate_attos = HZ_TO_ATTOSECONDS(machine().sample_rate());
+	m_samples_this_update = update_period.attoseconds() / sample_rate_attos;
+
+	// recompute the end time to an even sample boundary
+	attotime endtime = m_last_update + attotime(0, m_samples_this_update * sample_rate_attos);
+
+	if(m_osd_info.m_generation == 0xffffffff)
+		startup_cleanups();
+
+	mapping_update();
+	speakers_update(endtime);
+	compressor_update();
+	osd_output();
+	recording_output();
 
 	// update any orphaned streams so they don't get too far behind
 	for (auto &stream : m_orphan_stream_list)

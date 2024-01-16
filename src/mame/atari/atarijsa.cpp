@@ -799,16 +799,16 @@ void atari_jsa_i_device::device_add_mconfig(machine_config &config)
 	YM2151(config, m_ym2151, JSA_MASTER_CLOCK);
 	m_ym2151->irq_handler().set(FUNC(atari_jsa_i_device::ym2151_irq_gen));
 	m_ym2151->port_write_handler().set(FUNC(atari_jsa_base_device::ym2151_port_w));
-	m_ym2151->add_route(0, *this, 0.60, AUTO_ALLOC_INPUT, 0);
-	m_ym2151->add_route(1, *this, 0.60, AUTO_ALLOC_INPUT, 1);
+	m_ym2151->add_route(0, *this, 0.60, 0);
+	m_ym2151->add_route(1, *this, 0.60, 1);
 
 	POKEY(config, m_pokey, JSA_MASTER_CLOCK/2);
-	m_pokey->add_route(ALL_OUTPUTS, *this, 0.40, AUTO_ALLOC_INPUT, 0);
-	m_pokey->add_route(ALL_OUTPUTS, *this, 0.40, AUTO_ALLOC_INPUT, 1);
+	m_pokey->add_route(ALL_OUTPUTS, *this, 0.40, 0);
+	m_pokey->add_route(ALL_OUTPUTS, *this, 0.40, 1);
 
 	TMS5220C(config, m_tms5220, JSA_MASTER_CLOCK*2/11); // potentially JSA_MASTER_CLOCK/9 as well
-	m_tms5220->add_route(ALL_OUTPUTS, *this, 1.0, AUTO_ALLOC_INPUT, 0);
-	m_tms5220->add_route(ALL_OUTPUTS, *this, 1.0, AUTO_ALLOC_INPUT, 1);
+	m_tms5220->add_route(ALL_OUTPUTS, *this, 1.0, 0);
+	m_tms5220->add_route(ALL_OUTPUTS, *this, 1.0, 1);
 }
 
 
@@ -930,10 +930,10 @@ void atari_jsa_ii_device::device_add_mconfig(machine_config &config)
 	YM2151(config, m_ym2151, JSA_MASTER_CLOCK);
 	m_ym2151->irq_handler().set(FUNC(atari_jsa_ii_device::ym2151_irq_gen));
 	m_ym2151->port_write_handler().set(FUNC(atari_jsa_base_device::ym2151_port_w));
-	m_ym2151->add_route(ALL_OUTPUTS, *this, 0.60, AUTO_ALLOC_INPUT, 0);
+	m_ym2151->add_route(ALL_OUTPUTS, *this, 0.60, 0);
 
 	OKIM6295(config, m_oki1, JSA_MASTER_CLOCK/3, okim6295_device::PIN7_HIGH);
-	m_oki1->add_route(ALL_OUTPUTS, *this, 0.75, AUTO_ALLOC_INPUT, 0);
+	m_oki1->add_route(ALL_OUTPUTS, *this, 0.75, 0);
 }
 
 
@@ -1013,11 +1013,11 @@ void atari_jsa_iii_device::device_add_mconfig(machine_config &config)
 	YM2151(config, m_ym2151, JSA_MASTER_CLOCK);
 	m_ym2151->irq_handler().set(FUNC(atari_jsa_iii_device::ym2151_irq_gen));
 	m_ym2151->port_write_handler().set(FUNC(atari_jsa_base_device::ym2151_port_w));
-	m_ym2151->add_route(ALL_OUTPUTS, *this, 0.60, AUTO_ALLOC_INPUT, 0);
+	m_ym2151->add_route(ALL_OUTPUTS, *this, 0.60, 0);
 
 	OKIM6295(config, m_oki1, JSA_MASTER_CLOCK/3, okim6295_device::PIN7_HIGH);
 	m_oki1->set_addrmap(0, &atari_jsa_iii_device::jsa3_oki1_map);
-	m_oki1->add_route(ALL_OUTPUTS, *this, 0.75, AUTO_ALLOC_INPUT, 0);
+	m_oki1->add_route(ALL_OUTPUTS, *this, 0.75, 0);
 }
 
 
@@ -1057,10 +1057,10 @@ void atari_jsa_iiis_device::device_add_mconfig(machine_config &config)
 	atari_jsa_iii_device::device_add_mconfig(config);
 
 	m_ym2151->reset_routes();
-	m_ym2151->add_route(0, *this, 0.60, AUTO_ALLOC_INPUT, 0);
-	m_ym2151->add_route(1, *this, 0.60, AUTO_ALLOC_INPUT, 1);
+	m_ym2151->add_route(0, *this, 0.60, 0);
+	m_ym2151->add_route(1, *this, 0.60, 1);
 
 	OKIM6295(config, m_oki2, JSA_MASTER_CLOCK/3, okim6295_device::PIN7_HIGH);
-	m_oki2->add_route(ALL_OUTPUTS, *this, 0.75, AUTO_ALLOC_INPUT, 1);
+	m_oki2->add_route(ALL_OUTPUTS, *this, 0.75, 1);
 	m_oki2->set_addrmap(0, &atari_jsa_iiis_device::jsa3_oki2_map);
 }

@@ -2153,20 +2153,17 @@ void seattle_state::sfrush(machine_config &config)
 {
 	flagstaff(config);
 	// 5 Channel output (4 Channel input connected to Quad Amp PCB)
-	SPEAKER(config, "flspeaker").front_left();
-	SPEAKER(config, "frspeaker").front_right();
-	SPEAKER(config, "rlspeaker").headrest_left();
-	SPEAKER(config, "rrspeaker").headrest_right();
+	SPEAKER(config, "speaker", 4).corners();
 	//SPEAKER(config, "subwoofer").seat(); Not implemented, Quad Amp PCB output;
 
 	atari_cage_seattle_device &cage(ATARI_CAGE_SEATTLE(config, "cage", 0));
 	cage.set_speedup(0x5236);
 	cage.irq_handler().set(m_ioasic, FUNC(midway_ioasic_device::cage_irq_handler));
 	// TODO: copied from atarigt.cpp; Same configurations as T-Mek?
-	cage.add_route(0, "frspeaker", 1.0); // Foward Right
-	cage.add_route(1, "rlspeaker", 1.0); // Back Left
-	cage.add_route(2, "flspeaker", 1.0); // Foward Left
-	cage.add_route(3, "rrspeaker", 1.0); // Back Right
+	cage.add_route(0, "speaker", 1.0, 1); // Forward Right
+	cage.add_route(1, "speaker", 1.0, 2); // Back Left
+	cage.add_route(2, "speaker", 1.0, 0); // Forward Left
+	cage.add_route(3, "speaker", 1.0, 3); // Back Right
 
 	MIDWAY_IOASIC(config, m_ioasic, 0);
 	m_ioasic->set_shuffle(MIDWAY_IOASIC_STANDARD);
@@ -2180,21 +2177,17 @@ void seattle_state::sfrushrk(machine_config &config)
 {
 	flagstaff(config);
 	// 5 Channel output (4 Channel input connected to Quad Amp PCB)
-	SPEAKER(config, "flspeaker").front_left();
-	SPEAKER(config, "frspeaker").front_right();
-	SPEAKER(config, "rlspeaker").headrest_left();
-	SPEAKER(config, "rrspeaker").headrest_right();
+	SPEAKER(config, "speaker", 4).corners();
 	//SPEAKER(config, "subwoofer").seat(); Not implemented, Quad Amp PCB output;
 
 	atari_cage_seattle_device &cage(ATARI_CAGE_SEATTLE(config, "cage", 0));
 	cage.set_speedup(0x5329);
 	cage.irq_handler().set(m_ioasic, FUNC(midway_ioasic_device::cage_irq_handler));
 	// TODO: copied from atarigt.cpp; Same configurations as T-Mek?
-	cage.add_route(0, "frspeaker", 1.0); // Foward Right
-	cage.add_route(1, "rlspeaker", 1.0); // Back Left
-	cage.add_route(2, "flspeaker", 1.0); // Foward Left
-	cage.add_route(3, "rrspeaker", 1.0); // Back Right
-
+	cage.add_route(0, "speaker", 1.0, 1); // Forward Right
+	cage.add_route(1, "speaker", 1.0, 2); // Back Left
+	cage.add_route(2, "speaker", 1.0, 0); // Forward Left
+	cage.add_route(3, "speaker", 1.0, 3); // Back Right
 
 	MIDWAY_IOASIC(config, m_ioasic, 0);
 	m_ioasic->set_shuffle(MIDWAY_IOASIC_SFRUSHRK);

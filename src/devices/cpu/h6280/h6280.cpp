@@ -232,8 +232,8 @@ const h6280_device::ophandler h6280_device::s_opcodetable[256] =
 void h6280_device::device_add_mconfig(machine_config &config)
 {
 	C6280(config, m_psg, DERIVED_CLOCK(1,2));
-	m_psg->add_route(0, *this, 1.0, AUTO_ALLOC_INPUT, 0);
-	m_psg->add_route(1, *this, 1.0, AUTO_ALLOC_INPUT, 1);
+	m_psg->add_route(0, *this, 1.0, 0);
+	m_psg->add_route(1, *this, 1.0, 1);
 }
 
 void h6280_device::device_start()

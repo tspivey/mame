@@ -26,7 +26,6 @@
 //**************************************************************************
 
 constexpr int ALL_OUTPUTS       = 65535;    // special value indicating all outputs for the current chip
-constexpr int AUTO_ALLOC_INPUT  = 65535;
 
 
 
@@ -48,8 +47,8 @@ public:
 	{
 	public:
 		u32                                 m_output;           // output index, or ALL_OUTPUTS
-		u32                                 m_input;            // target input index
-		u32                                 m_mixoutput;        // target mixer output
+		u32                                 m_input;            // target input index (for sound devices, after allocation for mixers)
+		u32                                 m_mixoutput;        // target mixer index
 		float                               m_gain;             // gain
 		std::reference_wrapper<device_t>    m_base;             // target search base
 		std::string                         m_target;           // target tag
@@ -66,14 +65,14 @@ public:
 
 	// configuration helpers
 	template <typename T, bool R>
-	device_sound_interface &add_route(u32 output, const device_finder<T, R> &target, double gain, u32 input = AUTO_ALLOC_INPUT, u32 mixoutput = 0)
+	device_sound_interface &add_route(u32 output, const device_finder<T, R> &target, double gain, u32 channel = 0)
 	{
 		const std::pair<device_t &, const char *> ft(target.finder_target());
-		return add_route(output, ft.first, ft.second, gain, input, mixoutput);
+		return add_route(output, ft.first, ft.second, gain, channel);
 	}
-	device_sound_interface &add_route(u32 output, const char *target, double gain, u32 input = AUTO_ALLOC_INPUT, u32 mixoutput = 0);
-	device_sound_interface &add_route(u32 output, device_sound_interface &target, double gain, u32 input = AUTO_ALLOC_INPUT, u32 mixoutput = 0);
-	device_sound_interface &add_route(u32 output, speaker_device &target, double gain, u32 input = AUTO_ALLOC_INPUT, u32 mixoutput = 0);
+	device_sound_interface &add_route(u32 output, const char *target, double gain, u32 channel = 0);
+	device_sound_interface &add_route(u32 output, device_sound_interface &target, double gain, u32 channel = 0);
+	device_sound_interface &add_route(u32 output, speaker_device &target, double gain, u32 channel = 0);
 	device_sound_interface &reset_routes() { m_route_list.clear(); return *this; }
 
 	// sound stream update overrides
@@ -97,7 +96,7 @@ public:
 protected:
 	// configuration access
 	std::vector<sound_route> &routes() { return m_route_list; }
-	device_sound_interface &add_route(u32 output, device_t &base, const char *tag, double gain, u32 input, u32 mixoutput);
+	device_sound_interface &add_route(u32 output, device_t &base, const char *tag, double gain, u32 channel);
 
 	// optional operation overrides
 	virtual void interface_validity_check(validity_checker &valid) const override;

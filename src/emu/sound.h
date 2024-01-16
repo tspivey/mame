@@ -62,7 +62,7 @@
 #define MAME_EMU_SOUND_H
 
 #include "wavwrite.h"
-
+#include "interface/audio.h"
 
 //**************************************************************************
 //  CONSTANTS
@@ -755,6 +755,25 @@ class sound_manager
 	static const attotime STREAMS_UPDATE_ATTOTIME;
 
 public:
+	struct mapping {
+		struct node_mapping {
+			u32 m_node;
+			float m_db;
+			bool m_is_system_default;
+		};
+
+		struct channel_mapping {
+			u32 m_guest_channel;
+			u32 m_node;
+			u32 m_node_channel;
+			float m_db;
+			bool m_is_system_default;
+		};
+		speaker_device *m_speaker;
+		std::vector<node_mapping> m_node_mappings;
+		std::vector<channel_mapping> m_channel_mappings;
+	};
+
 	static constexpr int STREAMS_UPDATE_FREQUENCY = 50;
 
 	// construction/destruction
@@ -763,12 +782,14 @@ public:
 
 	// getters
 	running_machine &machine() const { return m_machine; }
-	int attenuation() const { return m_attenuation; }
+	float volume() const { return m_volume; }
 	const std::vector<std::unique_ptr<sound_stream>> &streams() const { return m_stream_list; }
 	attotime last_update() const { return m_last_update; }
-	int sample_count() const { return m_samples_this_update; }
 	int unique_id() { return m_unique_id++; }
 	stream_buffer::sample_t compressor_scale() const { return m_compressor_scale; }
+
+	const typename osd::audio_info &get_osd_info() const { return m_osd_info; }
+	const std::vector<mapping> &get_mappings() const { return m_mappings; }
 
 	// allocate a new stream with a new-style callback
 	sound_stream *stream_alloc(device_t &device, u32 inputs, u32 outputs, u32 sample_rate, stream_update_delegate callback, sound_stream_flags flags);
@@ -779,8 +800,22 @@ public:
 	bool start_recording(std::string_view filename);
 	void stop_recording();
 
-	// set the global OSD attenuation level
-	void set_attenuation(float attenuation);
+	// manage the speaker mapping and volume configuration
+	void config_add_speaker_target_node(speaker_device *speaker, std::string name, float db);
+	void config_add_speaker_target_default(speaker_device *speaker, float db);
+	void config_remove_speaker_target_node(speaker_device *speaker, std::string name);
+	void config_remove_speaker_target_default(speaker_device *speaker);
+	void config_set_volume_speaker_target_node(speaker_device *speaker, std::string name, float db);
+	void config_set_volume_speaker_target_default(speaker_device *speaker, float db);
+	void config_add_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel, float db);
+	void config_add_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel, float db);
+	void config_remove_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel);
+	void config_remove_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel);
+	void config_set_volume_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel, float db);
+	void config_set_volume_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel, float db);
+
+	// set the global OSD volume level
+	void set_volume(float db);
 
 	// mute sound for one of various independent reasons
 	bool muted() const { return bool(m_muted); }
@@ -795,9 +830,49 @@ public:
 	bool indexed_mixer_input(int index, mixer_input &info) const;
 
 	// fill the given buffer with 16-bit stereo audio samples
-	void samples(s16 *buffer);
+	std::vector<s16> samples();
 
 private:
+	struct speaker_info {
+		speaker_device &m_speaker;
+		u32 m_channels;
+		std::vector<std::vector<stream_buffer::sample_t>> m_buffers;
+		std::vector<std::vector<s16>> m_comp_buffers;
+		std::vector<u8> m_record_mix;
+
+		speaker_info(speaker_device &speaker, u32 size);
+	};
+
+	struct osd_stream {
+		u32 m_id;
+		u32 m_node;
+		std::string m_node_name;
+		u32 m_channels;
+		u32 m_clear_mask;
+		bool m_is_system_default;
+		speaker_device *m_speaker;
+		std::vector<u32> m_guest_channels;
+		std::vector<float> m_volumes;
+		std::vector<s16> m_buffer;
+	};
+
+	struct mixing_step {
+		enum { CLEAR, COPY, COPYVOL, ADD, ADDVOL };
+		u32 m_mode;
+		u32 m_source_index;
+		u32 m_source_channel;
+		u32 m_stream_index;
+		u32 m_stream_channel;
+		float m_linear_volume;
+	};
+
+	struct config_mapping {
+		std::string m_name;
+		// "" to indicates default node
+		std::vector<std::pair<std::string, float>> m_node_mappings;
+		std::vector<std::tuple<u32, std::string, u32, float>> m_channel_mappings;
+	};
+
 	// set/reset the mute state for the given reason
 	void mute(bool mute, u8 reason);
 
@@ -822,35 +897,69 @@ private:
 	stream_buffer::sample_t adjust_toward_compressor_scale(stream_buffer::sample_t curscale, stream_buffer::sample_t prevsample, stream_buffer::sample_t rawsample);
 
 	// periodic sound update, called STREAMS_UPDATE_FREQUENCY per second
-	void update(s32 param = 0);
+	void update(s32);
+
+	// handle mixing mapping update if needed
+	static std::vector<u32> find_channel_mapping(const std::array<double, 3> &position, const osd::audio_info::node_info *node);
+	void startup_cleanups();
+	void mapping_update();
+	void osd_information_update();
+	void generate_mapping();
+	void update_osd_streams();
+	void speakers_update(attotime endtime);
+	void compressor_update();
+	void osd_output();
+	void recording_output();
+
+	// manage the speaker mapping and volume configuration,
+	// but don't change generation because we're in the update process
+
+	config_mapping &config_get_speaker(speaker_device *speaker);
+	void internal_config_add_speaker_target_node(speaker_device *speaker, std::string name, float db);
+	void internal_config_add_speaker_target_default(speaker_device *speaker, float db);
+	void internal_config_remove_speaker_target_node(speaker_device *speaker, std::string name);
+	void internal_config_remove_speaker_target_default(speaker_device *speaker);
+	void internal_config_set_volume_speaker_target_node(speaker_device *speaker, std::string name, float db);
+	void internal_config_set_volume_speaker_target_default(speaker_device *speaker, float db);
+	void internal_config_add_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel, float db);
+	void internal_config_add_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel, float db);
+	void internal_config_remove_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel);
+	void internal_config_remove_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel);
+	void internal_config_set_volume_speaker_channel_target_node(speaker_device *speaker, u32 guest_channel, std::string name, u32 node_channel, float db);
+	void internal_config_set_volume_speaker_channel_target_default(speaker_device *speaker, u32 guest_channel, u32 node_channel, float db);
+
 
 	// internal state
-	running_machine &m_machine;           // reference to the running machine
-	emu_timer *m_update_timer;            // timer that runs the update function
-	std::vector<std::reference_wrapper<speaker_device> > m_speakers;
+	running_machine &m_machine;            // reference to the running machine
+	emu_timer *m_update_timer;             // timer that runs the update function
+	std::vector<speaker_info> m_speakers;
 
-	u32 m_update_number;                  // current update index; used for sample rate updates
-	attotime m_last_update;               // time of the last update
-	u32 m_finalmix_leftover;              // leftover samples in the final mix
-	u32 m_samples_this_update;            // number of samples this update
-	std::vector<s16> m_finalmix;          // final mix, in 16-bit signed format
-	std::vector<stream_buffer::sample_t> m_leftmix; // left speaker mix, in native format
-	std::vector<stream_buffer::sample_t> m_rightmix; // right speaker mix, in native format
+	u32 m_update_number;                   // current update index; used for sample rate updates
+	attotime m_last_update;                // time of the last update
+	u32 m_comp_leftover;                   // leftover samples from the compressor
+	u32 m_samples_this_update;             // number of samples this update
+	u32 m_comp_samples_this_update;        // number of samples this update post compression and freq. scaling
+	std::vector<s16> m_record_buffer;      // recording final mix, in 16-bit interleaved stereo signed format
+	osd::audio_info m_osd_info;            // current state of the osd information
+	std::vector<mapping> m_mappings;       // current state of the mappings
+	std::vector<osd_stream> m_osd_streams; // currently active osd streams
+	std::vector<mixing_step> m_mixing_steps; // actions to take to fill the osd streams buffers
+	std::vector<config_mapping> m_configs; // mapping user configuration
 
 	stream_buffer::sample_t m_compressor_scale; // current compressor scale factor
-	int m_compressor_counter;             // compressor update counter for backoff
-	bool m_compressor_enabled;            // enable compressor (it will still be calculated for detecting overdrive)
+	int m_compressor_counter;              // compressor update counter for backoff
+	bool m_compressor_enabled;             // enable compressor (it will still be calculated for detecting overdrive)
 
-	u8 m_muted;                           // bitmask of muting reasons
-	bool m_nosound_mode;                  // true if we're in "nosound" mode
-	int m_attenuation;                    // current attentuation level (at the OSD)
-	int m_unique_id;                      // unique ID used for stream identification
-	util::wav_file_ptr m_wavfile;         // WAV file for streaming
+	u8 m_muted;                            // bitmask of muting reasons
+	bool m_nosound_mode;                   // true if we're in "nosound" mode
+	float m_volume;                        // current volume level (at the OSD)
+	int m_unique_id;                       // unique ID used for stream identification
+	util::wav_file_ptr m_wavfile;          // WAV file for streaming
 
 	// streams data
 	std::vector<std::unique_ptr<sound_stream>> m_stream_list; // list of streams
 	std::map<sound_stream *, u8> m_orphan_stream_list; // list of orphaned streams
-	bool m_first_reset;                   // is this our first reset?
+	bool m_first_reset;                    // is this our first reset?
 };
 
 

@@ -89,6 +89,8 @@ files {
 	MAME_DIR .. "src/frontend/mame/ui/about.h",
 	MAME_DIR .. "src/frontend/mame/ui/analogipt.cpp",
 	MAME_DIR .. "src/frontend/mame/ui/analogipt.cpp",
+	MAME_DIR .. "src/frontend/mame/ui/audiomix.cpp",
+	MAME_DIR .. "src/frontend/mame/ui/audiomix.h",
 	MAME_DIR .. "src/frontend/mame/ui/auditmenu.cpp",
 	MAME_DIR .. "src/frontend/mame/ui/auditmenu.h",
 	MAME_DIR .. "src/frontend/mame/ui/barcode.cpp",

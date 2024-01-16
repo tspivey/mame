@@ -1456,10 +1456,10 @@ void firebeat_bm3_state::firebeat_bm3(machine_config &config)
 	m_rf5c400->add_route(3, "rspeaker", 0.5);
 
 	KONAMI_FIREBEAT_EXTEND_SPECTRUM_ANALYZER(config, m_spectrum_analyzer, 0);
-	m_rf5c400->add_route(0, m_spectrum_analyzer, 0.5, AUTO_ALLOC_INPUT, 0);
-	m_rf5c400->add_route(1, m_spectrum_analyzer, 0.5, AUTO_ALLOC_INPUT, 1);
-	m_rf5c400->add_route(2, m_spectrum_analyzer, 0.5, AUTO_ALLOC_INPUT, 0);
-	m_rf5c400->add_route(3, m_spectrum_analyzer, 0.5, AUTO_ALLOC_INPUT, 1);
+	m_rf5c400->add_route(0, m_spectrum_analyzer, 0.5, 0);
+	m_rf5c400->add_route(1, m_spectrum_analyzer, 0.5, 1);
+	m_rf5c400->add_route(2, m_spectrum_analyzer, 0.5, 0);
+	m_rf5c400->add_route(3, m_spectrum_analyzer, 0.5, 1);
 }
 
 void firebeat_bm3_state::init_bm3()

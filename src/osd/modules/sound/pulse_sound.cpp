@@ -40,8 +40,7 @@ public:
 
 	virtual int init(osd_interface &osd, osd_options const &options) override;
 	virtual void exit() override;
-	virtual void update_audio_stream(bool is_throttled, const s16 *buffer, int samples_this_frame) override;
-	virtual void set_mastervolume(int attenuation) override;
+	virtual void stream_update(uint32_t, const s16 *buffer, int samples_this_frame) override;
 
 private:
 	struct abuffer {
@@ -58,15 +57,10 @@ private:
 	std::vector<abuffer> m_buffers;
 
 	u32 m_last_sample;
-	int m_new_volume_value;
-	bool m_setting_volume;
-	bool m_new_volume;
 
 	int m_pipe_to_sub[2];
 	int m_pipe_to_main[2];
 
-	static void i_volume_set_notify(pa_context *, int success, void *self);
-	void volume_set_notify(int success);
 	static void i_context_notify(pa_context *, void *self);
 	void context_notify();
 	static void i_stream_notify(pa_stream *, void *self);
@@ -276,9 +270,6 @@ void sound_pulse::stop_mainloop(int err)
 int sound_pulse::init(osd_interface &osd, osd_options const &options)
 {
 	m_last_sample = 0;
-	m_setting_volume = false;
-	m_new_volume = false;
-	m_new_volume_value = 0;
 
 	m_mainloop = pa_mainloop_new();
 	m_context = pa_context_new(pa_mainloop_get_api(m_mainloop), "MAME");
@@ -327,7 +318,7 @@ int sound_pulse::init(osd_interface &osd, osd_options const &options)
 	return 0;
 }
 
-void sound_pulse::update_audio_stream(bool is_throttled, const s16 *buffer, int samples_this_frame)
+void sound_pulse::stream_update(uint32_t, const s16 *buffer, int samples_this_frame)
 {
 	std::unique_lock<std::mutex> lock(m_mutex);
 	m_buffers.resize(m_buffers.size() + 1);
@@ -346,41 +337,6 @@ void sound_pulse::update_audio_stream(bool is_throttled, const s16 *buffer, int 
 		// to slowly resync to reduce latency (4 seconds to
 		// compensate one buffer roughly)
 		buf.cpos = 5;
-}
-
-void sound_pulse::volume_set_notify(int success)
-{
-	std::unique_lock<std::mutex> lock(m_mutex);
-	if(m_new_volume) {
-		m_new_volume = false;
-		pa_cvolume vol;
-		pa_cvolume_set(&vol, 2, pa_sw_volume_from_dB(m_new_volume_value));
-		pa_context_set_sink_input_volume(m_context, pa_stream_get_index(m_stream), &vol, i_volume_set_notify, this);
-	} else
-		m_setting_volume = false;
-}
-
-void sound_pulse::i_volume_set_notify(pa_context *, int success, void *self)
-{
-	static_cast<sound_pulse *>(self)->volume_set_notify(success);
-}
-
-void sound_pulse::set_mastervolume(int attenuation)
-{
-	if(!m_stream)
-		return;
-
-
-	std::unique_lock<std::mutex> lock(m_mutex);
-	if(m_setting_volume) {
-		m_new_volume = true;
-		m_new_volume_value = attenuation;
-	} else {
-		m_setting_volume = true;
-		pa_cvolume vol;
-		pa_cvolume_set(&vol, 2, pa_sw_volume_from_dB(attenuation));
-		pa_context_set_sink_input_volume(m_context, pa_stream_get_index(m_stream), &vol, i_volume_set_notify, this);
-	}
 }
 
 void sound_pulse::exit()

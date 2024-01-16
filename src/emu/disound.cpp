@@ -43,25 +43,26 @@ device_sound_interface::~device_sound_interface()
 //  add_route - send sound output to a consumer
 //-------------------------------------------------
 
-device_sound_interface &device_sound_interface::add_route(u32 output, const char *target, double gain, u32 input, u32 mixoutput)
+device_sound_interface &device_sound_interface::add_route(u32 output, const char *target, double gain, u32 channel)
 {
-	return add_route(output, device().mconfig().current_device(), target, gain, input, mixoutput);
+	return add_route(output, device().mconfig().current_device(), target, gain, channel);
 }
 
-device_sound_interface &device_sound_interface::add_route(u32 output, device_sound_interface &target, double gain, u32 input, u32 mixoutput)
+device_sound_interface &device_sound_interface::add_route(u32 output, device_sound_interface &target, double gain, u32 channel)
 {
-	return add_route(output, target.device(), DEVICE_SELF, gain, input, mixoutput);
+	return add_route(output, target.device(), DEVICE_SELF, gain, channel);
 }
 
-device_sound_interface &device_sound_interface::add_route(u32 output, speaker_device &target, double gain, u32 input, u32 mixoutput)
+device_sound_interface &device_sound_interface::add_route(u32 output, speaker_device &target, double gain, u32 channel)
 {
-	return add_route(output, target, DEVICE_SELF, gain, input, mixoutput);
+	return add_route(output, target, DEVICE_SELF, gain, channel);
 }
 
-device_sound_interface &device_sound_interface::add_route(u32 output, device_t &base, const char *target, double gain, u32 input, u32 mixoutput)
+device_sound_interface &device_sound_interface::add_route(u32 output, device_t &base, const char *target, double gain, u32 channel)
 {
 	assert(!device().started());
-	m_route_list.emplace_back(sound_route{ output, input, mixoutput, float(gain), base, target });
+	// Put the channel always in m_input, will be resolved in interface_pre_start
+	m_route_list.emplace_back(sound_route{ output, channel, 0, float(gain), base, target });
 	return *this;
 }
 
@@ -299,7 +300,8 @@ void device_sound_interface::interface_pre_start()
 				// see if we are the target of this route; if we are, make sure the source device is started
 				if (!sound.device().started())
 					throw device_missing_dependencies();
-				if (route.m_input != AUTO_ALLOC_INPUT)
+				device_mixer_interface *mixer;
+				if (!target_device->interface(mixer))
 					m_specified_inputs_mask |= 1 << route.m_input;
 			}
 		}
@@ -314,8 +316,11 @@ void device_sound_interface::interface_pre_start()
 		{
 			// see if we are the target of this route
 			device_t *const target_device = route.m_base.get().subdevice(route.m_target);
-			if (target_device == &device() && route.m_input == AUTO_ALLOC_INPUT)
+			device_mixer_interface *mixer;
+			if (target_device == &device() && target_device->interface(mixer))
 			{
+				// Mixers up to this point have the output channel in m_input
+				route.m_mixoutput = route.m_input;
 				route.m_input = m_auto_allocated_inputs;
 				m_auto_allocated_inputs += (route.m_output == ALL_OUTPUTS) ? sound.outputs() : 1;
 			}

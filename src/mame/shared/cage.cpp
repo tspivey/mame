@@ -693,19 +693,19 @@ void atari_cage_device::device_add_mconfig(machine_config &config)
 	GENERIC_LATCH_16(config, m_soundlatch);
 
 #if (DAC_BUFFER_CHANNELS == 4)
-	DMADAC(config, m_dmadac[0]).add_route(ALL_OUTPUTS, *this, 0.50, AUTO_ALLOC_INPUT, 0);
+	DMADAC(config, m_dmadac[0]).add_route(ALL_OUTPUTS, *this, 0.50, 0);
 
-	DMADAC(config, m_dmadac[1]).add_route(ALL_OUTPUTS, *this, 0.50, AUTO_ALLOC_INPUT, 1);
+	DMADAC(config, m_dmadac[1]).add_route(ALL_OUTPUTS, *this, 0.50, 1);
 
-	DMADAC(config, m_dmadac[2]).add_route(ALL_OUTPUTS, *this, 0.50, AUTO_ALLOC_INPUT, 2);
+	DMADAC(config, m_dmadac[2]).add_route(ALL_OUTPUTS, *this, 0.50, 2);
 
-	DMADAC(config, m_dmadac[3]).add_route(ALL_OUTPUTS, *this, 0.50, AUTO_ALLOC_INPUT, 3);
+	DMADAC(config, m_dmadac[3]).add_route(ALL_OUTPUTS, *this, 0.50, 3);
 #else
-	DMADAC(config, m_dmadac[0]).add_route(ALL_OUTPUTS, *this, 1.0, AUTO_ALLOC_INPUT, 0);
+	DMADAC(config, m_dmadac[0]).add_route(ALL_OUTPUTS, *this, 1.0, 0);
 
-	DMADAC(config, m_dmadac[1]).add_route(ALL_OUTPUTS, *this, 1.0, AUTO_ALLOC_INPUT, 1);
+	DMADAC(config, m_dmadac[1]).add_route(ALL_OUTPUTS, *this, 1.0, 1);
 #endif
-	//add_route(ALL_OUTPUTS, *this, 0.50, AUTO_ALLOC_INPUT, 4); Subwoofer output
+	//add_route(ALL_OUTPUTS, *this, 0.50, 4); Subwoofer output
 }
 
 // Embedded in San francisco Rush Motherboard, 4 channel output connected to Quad Amp PCB and expanded to 5 channel (4 channel + subwoofer)

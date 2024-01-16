@@ -54,7 +54,6 @@ public:
 		sample_rate(0),
 		sdl_xfer_samples(SDL_XFER_SAMPLES),
 		stream_in_initialized(0),
-		attenuation(0),
 		buf_locked(0),
 		stream_buffer(nullptr),
 		stream_buffer_size(0),
@@ -69,8 +68,7 @@ public:
 
 	// sound_module
 
-	virtual void update_audio_stream(bool is_throttled, const int16_t *buffer, int samples_this_frame) override;
-	virtual void set_mastervolume(int attenuation) override;
+	virtual void stream_update(uint32_t, const int16_t *buffer, int samples_this_frame) override;
 
 private:
 	class ring_buffer
@@ -93,15 +91,13 @@ private:
 
 	void lock_buffer();
 	void unlock_buffer();
-	void attenuate(int16_t *data, int bytes);
-	void copy_sample_data(bool is_throttled, const int16_t *data, int bytes_to_copy);
+	void copy_sample_data(const int16_t *data, int bytes_to_copy);
 	int sdl_create_buffers();
 	void sdl_destroy_buffers();
 
 	int sample_rate;
 	int sdl_xfer_samples;
 	int stream_in_initialized;
-	int attenuation;
 
 	int              buf_locked;
 	std::unique_ptr<ring_buffer> stream_buffer;
@@ -215,26 +211,10 @@ void sound_sdl::unlock_buffer()
 }
 
 //============================================================
-//  Apply attenuation
-//============================================================
-
-void sound_sdl::attenuate(int16_t *data, int bytes_to_copy)
-{
-	int level = (int) (pow(10.0, (double) attenuation / 20.0) * 128.0);
-	int count = bytes_to_copy / sizeof(*data);
-	while (count > 0)
-	{
-		*data = (*data * level) >> 7; /* / 128 */
-		data++;
-		count--;
-	}
-}
-
-//============================================================
 //  copy_sample_data
 //============================================================
 
-void sound_sdl::copy_sample_data(bool is_throttled, const int16_t *data, int bytes_to_copy)
+void sound_sdl::copy_sample_data(const int16_t *data, int bytes_to_copy)
 {
 	lock_buffer();
 	int const err = stream_buffer->append(data, bytes_to_copy);
@@ -246,10 +226,10 @@ void sound_sdl::copy_sample_data(bool is_throttled, const int16_t *data, int byt
 
 
 //============================================================
-//  update_audio_stream
+//  stream_update
 //============================================================
 
-void sound_sdl::update_audio_stream(bool is_throttled, const int16_t *buffer, int samples_this_frame)
+void sound_sdl::stream_update(uint32_t, const int16_t *buffer, int samples_this_frame)
 {
 	// if nothing to do, don't do it
 	if (sample_rate == 0 || !stream_buffer)
@@ -279,7 +259,7 @@ void sound_sdl::update_audio_stream(bool is_throttled, const int16_t *buffer, in
 		return;
 	}
 
-	copy_sample_data(is_throttled, buffer, bytes_this_frame);
+	copy_sample_data(buffer, bytes_this_frame);
 
 	size_t nfree_size = stream_buffer->free_size();
 	size_t ndata_size = stream_buffer->data_size();
@@ -288,24 +268,6 @@ void sound_sdl::update_audio_stream(bool is_throttled, const int16_t *buffer, in
 }
 
 
-
-//============================================================
-//  set_mastervolume
-//============================================================
-
-void sound_sdl::set_mastervolume(int _attenuation)
-{
-	// clamp the attenuation to 0-32 range
-	attenuation = std::clamp(_attenuation, -32, 0);
-
-	if (stream_in_initialized)
-	{
-		if (attenuation == -32)
-			SDL_PauseAudio(1);
-		else
-			SDL_PauseAudio(0);
-	}
-}
 
 //============================================================
 //  sdl_callback
@@ -330,8 +292,6 @@ void sound_sdl::sdl_callback(void *userdata, Uint8 *stream, int len)
 	int err = thiz->stream_buffer->pop((void *)stream, len);
 	if (LOG_SOUND && err)
 		*thiz->sound_log << "Late detection of underflow. This shouldn't happen.\n";
-
-	thiz->attenuate((int16_t *)stream, len);
 
 	if (LOG_SOUND)
 		util::stream_format(*thiz->sound_log, "callback: xfer DS=%u FS=%u Len=%d\n", data_size, free_size, len);
@@ -398,7 +358,6 @@ int sound_sdl::init(osd_interface &osd, const osd_options &options)
 			goto cant_create_buffers;
 
 		// set the startup volume
-		set_mastervolume(attenuation);
 		osd_printf_verbose("Audio: End initialization\n");
 		return 0;
 

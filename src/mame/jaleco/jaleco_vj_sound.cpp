@@ -260,12 +260,12 @@ void jaleco_vj_isa16_sound_device::device_add_mconfig(machine_config &config)
 	// BGM normal
 	YMZ280B(config, m_ymz[0], 16.9344_MHz_XTAL);
 	m_ymz[0]->set_addrmap(0, &jaleco_vj_isa16_sound_device::ymz280b_map);
-	m_ymz[0]->add_route(1, *this, 1.0, AUTO_ALLOC_INPUT, 0);
+	m_ymz[0]->add_route(1, *this, 1.0, 0);
 
 	// BGM subwoofer
 	YMZ280B(config, m_ymz[1], 16.9344_MHz_XTAL);
 	m_ymz[1]->set_addrmap(0, &jaleco_vj_isa16_sound_device::ymz280b_map2);
-	m_ymz[1]->add_route(1, *this, 1.0, AUTO_ALLOC_INPUT, 1);
+	m_ymz[1]->add_route(1, *this, 1.0, 1);
 }
 
 void jaleco_vj_isa16_sound_device::device_start()

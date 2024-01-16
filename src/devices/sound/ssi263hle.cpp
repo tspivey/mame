@@ -116,7 +116,7 @@ void ssi263hle_device::device_add_mconfig(machine_config &config)
 {
 	VOTRAX_SC01(config, m_votrax, DERIVED_CLOCK(1, 1));
 	m_votrax->ar_callback().set(FUNC(ssi263hle_device::votrax_request));
-	m_votrax->add_route(ALL_OUTPUTS, *this, 1.0, AUTO_ALLOC_INPUT, 0);
+	m_votrax->add_route(ALL_OUTPUTS, *this, 1.0, 0);
 }
 
 TIMER_CALLBACK_MEMBER(ssi263hle_device::phoneme_tick)

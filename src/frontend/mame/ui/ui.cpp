@@ -1494,14 +1494,6 @@ std::vector<ui::menu_item> mame_ui_manager::slider_init(running_machine &machine
 		slider_alloc(std::move(str), 0, 1000, 4000, 20, std::bind(&mame_ui_manager::slider_mixervol, this, item, _1, _2));
 	}
 
-	// add speaker panning
-	for (speaker_device &speaker : speaker_device_enumerator(machine.root_device()))
-	{
-		int defpan = floorf(speaker.defpan() * 1000.0f + 0.5f);
-		std::string str = string_format(_("%s '%s' Panning"), speaker.name(), speaker.tag());
-		slider_alloc(std::move(str), -1000, defpan, 1000, 20, std::bind(&mame_ui_manager::slider_panning, this, std::ref(speaker), _1, _2));
-	}
-
 	// add analog adjusters
 	for (auto &port : machine.ioport().ports())
 	{
@@ -1642,9 +1634,9 @@ std::vector<ui::menu_item> mame_ui_manager::slider_init(running_machine &machine
 int32_t mame_ui_manager::slider_volume(std::string *str, int32_t newval)
 {
 	if (newval != SLIDER_NOCHANGE)
-		machine().sound().set_attenuation(newval);
+		machine().sound().set_volume(newval);
 
-	int32_t curval = machine().sound().attenuation();
+	int32_t curval = machine().sound().volume();
 	if (str)
 		*str = string_format(_(u8"%1$3d\u00a0dB"), curval);
 
@@ -1675,45 +1667,6 @@ int32_t mame_ui_manager::slider_mixervol(int item, std::string *str, int32_t new
 			*str = string_format(_("%1$.1f%%"), float(curval) * 0.1f);
 		else
 			*str = string_format(_("%1$3d%%"), curval / 10);
-	}
-
-	return curval;
-}
-
-
-//-------------------------------------------------
-//  slider_panning - speaker panning slider
-//  callback
-//-------------------------------------------------
-
-int32_t mame_ui_manager::slider_panning(speaker_device &speaker, std::string *str, int32_t newval)
-{
-	if (newval != SLIDER_NOCHANGE)
-		speaker.set_pan(float(newval) * 0.001f);
-
-	int32_t curval = floorf(speaker.pan() * 1000.0f + 0.5f);
-	if (str)
-	{
-		switch (curval)
-		{
-			// preset strings for exact center/left/right
-			case 0:
-				*str = _("Center");
-				break;
-
-			case -1000:
-				*str = _("Left");
-				break;
-
-			case 1000:
-				*str = _("Right");
-				break;
-
-			// otherwise show as floating point
-			default:
-				*str = string_format(_("%1$.3f"), float(curval) * 0.001f);
-				break;
-		}
 	}
 
 	return curval;

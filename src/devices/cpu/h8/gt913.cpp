@@ -101,8 +101,8 @@ void gt913_device::device_add_mconfig(machine_config &config)
 
 	GT913_SOUND(config, m_sound, DERIVED_CLOCK(1, 1));
 	m_sound->set_device_rom_tag(m_rom);
-	m_sound->add_route(0, *this, 1.0, AUTO_ALLOC_INPUT, 0);
-	m_sound->add_route(1, *this, 1.0, AUTO_ALLOC_INPUT, 1);
+	m_sound->add_route(0, *this, 1.0, 0);
+	m_sound->add_route(1, *this, 1.0, 1);
 
 	GT913_KBD_HLE(config, m_kbd, 0);
 	m_kbd->irq_cb().set([this] (int val) {

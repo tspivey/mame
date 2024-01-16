@@ -145,8 +145,8 @@ void st0016_cpu_device::device_add_mconfig(machine_config &config)
 
 	st0016_device &stsnd(ST0016(config, "stsnd", DERIVED_CLOCK(1,1)));
 	stsnd.set_addrmap(0, &st0016_cpu_device::charam_map);
-	stsnd.add_route(0, *this, 1.0, AUTO_ALLOC_INPUT, 0);
-	stsnd.add_route(1, *this, 1.0, AUTO_ALLOC_INPUT, 1);
+	stsnd.add_route(0, *this, 1.0, 0);
+	stsnd.add_route(1, *this, 1.0, 1);
 }
 
 

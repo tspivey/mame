@@ -198,8 +198,8 @@ void taito_zoom_device::device_add_mconfig(machine_config &config)
 	m_tms57002->empty_callback().set_inputline(m_soundcpu, MN10200_IRQ1).invert();
 
 	m_tms57002->set_addrmap(AS_DATA, &taito_zoom_device::tms57002_map);
-	m_tms57002->add_route(2, *this, 1.0, AUTO_ALLOC_INPUT, 0);
-	m_tms57002->add_route(3, *this, 1.0, AUTO_ALLOC_INPUT, 1);
+	m_tms57002->add_route(2, *this, 1.0, 0);
+	m_tms57002->add_route(3, *this, 1.0, 1);
 
 	ZSG2(config, m_zsg2, XTAL(25'000'000));
 	m_zsg2->add_route(0, *m_tms57002, 0.5, 0); // reverb effect

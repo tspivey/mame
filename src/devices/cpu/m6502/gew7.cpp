@@ -37,8 +37,8 @@ void gew7_device::device_add_mconfig(machine_config &config)
 {
 	GEW7_PCM(config, m_pcm, DERIVED_CLOCK(1, 1));
 	m_pcm->set_device_rom_tag(m_rom);
-	m_pcm->add_route(0, *this, 1.0, AUTO_ALLOC_INPUT, 0);
-	m_pcm->add_route(1, *this, 1.0, AUTO_ALLOC_INPUT, 1);
+	m_pcm->add_route(0, *this, 1.0, 0);
+	m_pcm->add_route(1, *this, 1.0, 1);
 }
 
 void gew7_device::device_start()

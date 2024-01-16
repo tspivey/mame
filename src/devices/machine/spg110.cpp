@@ -100,8 +100,8 @@ void spg110_device::device_add_mconfig(machine_config &config)
 	m_spg_audio->write_irq_callback().set(FUNC(spg110_device::audioirq_w));
 	m_spg_audio->space_read_callback().set(FUNC(spg110_device::space_r));
 
-	m_spg_audio->add_route(0, *this, 1.0, AUTO_ALLOC_INPUT, 0);
-	m_spg_audio->add_route(1, *this, 1.0, AUTO_ALLOC_INPUT, 1);
+	m_spg_audio->add_route(0, *this, 1.0, 0);
+	m_spg_audio->add_route(1, *this, 1.0, 1);
 }
 
 void spg110_device::internal_map(address_map &map)

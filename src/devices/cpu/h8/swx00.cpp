@@ -316,8 +316,8 @@ void swx00_device::device_add_mconfig(machine_config &config)
 
 	SWX00_SOUND(config, m_swx00);
 	m_swx00->set_space(DEVICE_SELF, AS_S);
-	m_swx00->add_route(0, DEVICE_SELF, 1.0, AUTO_ALLOC_INPUT, 0);
-	m_swx00->add_route(1, DEVICE_SELF, 1.0, AUTO_ALLOC_INPUT, 1);
+	m_swx00->add_route(0, DEVICE_SELF, 1.0, 0);
+	m_swx00->add_route(1, DEVICE_SELF, 1.0, 1);
 }
 
 device_memory_interface::space_config_vector swx00_device::memory_space_config() const

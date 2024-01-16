@@ -263,14 +263,14 @@ void pce_cd_device::device_add_mconfig(machine_config &config)
 	MSM5205(config, m_msm, PCE_CD_CLOCK / 6);
 	m_msm->vck_legacy_callback().set(FUNC(pce_cd_device::msm5205_int)); /* interrupt function */
 	m_msm->set_prescaler_selector(msm5205_device::S48_4B);  /* 1/48 prescaler, 4bit data */
-	m_msm->add_route(ALL_OUTPUTS, *this, 0.50, AUTO_ALLOC_INPUT, 0);
-	m_msm->add_route(ALL_OUTPUTS, *this, 0.50, AUTO_ALLOC_INPUT, 1);
+	m_msm->add_route(ALL_OUTPUTS, *this, 0.50, 0);
+	m_msm->add_route(ALL_OUTPUTS, *this, 0.50, 1);
 
 	CDDA(config, m_cdda);
 	m_cdda->set_cdrom_tag(m_cdrom);
 	m_cdda->audio_end_cb().set(FUNC(pce_cd_device::cdda_end_mark_cb));
-	m_cdda->add_route(0, *this, 1.00, AUTO_ALLOC_INPUT, 0);
-	m_cdda->add_route(1, *this, 1.00, AUTO_ALLOC_INPUT, 1);
+	m_cdda->add_route(0, *this, 1.00, 0);
+	m_cdda->add_route(1, *this, 1.00, 1);
 }
 
 void pce_cd_device::adpcm_stop(uint8_t irq_flag)
