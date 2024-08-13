@@ -1267,6 +1267,7 @@ configuration { "mingw*" }
 			"iphlpapi",
 			"shell32",
 			"userenv",
+			"nvdaControllerClient",
 		}
 
 configuration { "vs20*" }

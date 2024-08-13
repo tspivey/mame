@@ -8,8 +8,10 @@
 
 *********************************************************************/
 
+#include "ui/nvdaController.h"
 #include "emu.h"
 #include "ui/menu.h"
+#include "strconv.h"
 
 #include "ui/ui.h"
 #include "ui/mainmenu.h"
@@ -33,6 +35,11 @@
 
 
 namespace ui {
+void speak(const std::string &text) {
+	// Takes an std::string, converts it to unicode and speaks it.
+	std::wstring dst = osd::text::to_wstring(text);
+	nvdaController_speakText(dst.c_str());
+}
 
 /***************************************************************************
     INLINE FUNCTIONS
@@ -1722,6 +1729,7 @@ bool menu::handle_keys(uint32_t flags, int &iptkey)
 		if (m_selected <= top_line && m_visible_items != m_visible_lines)
 			top_line--;
 		updated = true;
+		speak(m_items[m_selected].text() + " " + m_items[m_selected].subtext());
 	}
 
 	// down advances by one item
@@ -1744,6 +1752,7 @@ bool menu::handle_keys(uint32_t flags, int &iptkey)
 		if (m_selected >= (top_line + m_visible_items + (top_line != 0)))
 			top_line++;
 		updated = true;
+		speak(m_items[m_selected].text() + " " + m_items[m_selected].subtext());
 	}
 
 	// page up backs up by m_visible_items

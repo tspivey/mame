@@ -2482,6 +2482,7 @@ void mame_ui_manager::popup_time_string(int seconds, std::string message)
 
 	// set a timer
 	m_popup_text_end = osd_ticks() + osd_ticks_per_second() * seconds;
+	ui::speak(message);
 }
 
 

@@ -43,7 +43,7 @@ namespace ui {
 
 class menu_item;
 class machine_info;
-
+void speak(const std::string &text);
 } // namespace ui
 
 class laserdisc_device;
